@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>🎛️ Real-Time Audio Mixer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <h1>🎧 Luna's Audio Mixer</h1>
+
+  <label>Input Source 1:
+    <select id="input1"></select>
+  </label><br>
+  <label>Input Source 2:
+    <select id="input2"></select>
+  </label><br>
+  <label>Input Source 3:
+    <select id="input3"></select>
+  </label><br>
+  <label>Monitor Output Device:
+    <select id="monitorDevice"></select>
+  </label><br>
+  <label>Mixed Output Device:
+    <select id="mixedOutputDevice"></select>
+  </label><br><br>
+
+  <div>
+    <h3>🔊 Master Controls</h3>
+    <label>Monitor Master Volume:
+      <input type="range" id="monitorMaster" min="0" max="1" step="0.01" value="1">
+    </label><br>
+    <label>Output Master Volume:
+      <input type="range" id="outputMaster" min="0" max="1" step="0.01" value="1">
+    </label><br><br>
+  </div>
+
+  <div id="sources"></div>
+
+  <script src="./renderer.js"></script>
+</body>
+</html>

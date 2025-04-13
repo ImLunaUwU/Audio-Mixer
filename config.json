@@ -1,0 +1,20 @@
+{
+  "inputs": [
+    {
+      "deviceId": "default",
+      "monitorVolume": 1,
+      "outputVolume": 1,
+      "monitorMute": false,
+      "outputMute": false
+    },
+    {
+      "deviceId": "fac6cf73e4845dadd14edb5360eede113abe92972e632727101ce7bad4685b6d",
+      "monitorVolume": 1,
+      "outputVolume": 1,
+      "monitorMute": false,
+      "outputMute": false
+    }
+  ],
+  "monitorDeviceId": "",
+  "mixedOutputDeviceId": ""
+}

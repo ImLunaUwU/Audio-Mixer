@@ -1,0 +1,46 @@
+{
+  "name": "audio-mixer",
+  "version": "1.0.0",
+  "description": "Little audio mixer I made for fun, for my love.",
+  "author": "Luna",
+  "main": "main.js",
+  "productName": "Audio Mixer",
+  "scripts": {
+    "make": "electron-forge make",
+    "start": "electron .",
+    "make-debug": "cross-env DEBUG=electron-forge:* electron-forge make"
+  },
+  "build": {
+    "appId": "dev.imluna.audio-mixer",
+    "productName": "Audio Mixer",
+    "asar": {
+      "unpack": "**/*.json"
+    },
+    "files": [
+      "**/*",
+      "!config.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "ignore": [
+      "node_modules/.cache",
+      "node_modules/electron",
+      "node_modules/electron-rebuild",
+      "node_modules/@electron-forge/*"
+    ]
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.7.0",
+    "@electron-forge/maker-squirrel": "^7.7.0",
+    "@electron-forge/maker-zip": "^7.7.0",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.7.0",
+    "@electron/fuses": "^1.8.0",
+    "@electron/rebuild": "^3.7.1",
+    "electron": "^34.3.0",
+    "electron-winstaller": "^5.4.0"
+  },
+  "dependencies": {
+    "electron-squirrel-startup": "^1.0.1"
+  }
+}

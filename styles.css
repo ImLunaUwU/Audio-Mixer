@@ -1,0 +1,161 @@
+/* General Body and Layout */
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  padding: 0;
+  color: white;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100vh;
+  justify-content: flex-start;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* Fixed background fade to black */
+body::before {
+  content: '';
+  position: fixed;  /* Fix the background */
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(to bottom, rgba(0, 170, 255, 0.7), rgba(0, 77, 119, 1));
+  z-index: -1;
+}
+
+/* Header Styling */
+h1 {
+  font-size: 2rem;
+  margin-top: 20px;
+  margin-bottom: 20px;
+  text-shadow: 4px 4px 10px rgba(0, 0, 0, 0.8);  /* Extreme shadow */
+  font-weight: 600;
+}
+
+/* Dropdown Styles */
+select {
+  font-size: 1rem;
+  padding: 8px 32px 8px 8px; /* Added padding for the arrow */
+  margin: 8px;
+  border-radius: 5px;
+  border: 1px solid #ccc;
+  background-color: #003c5c;
+  color: white;
+  appearance: none;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+  position: relative;
+}
+
+select::-ms-expand {
+  display: none;
+}
+
+select:focus {
+  outline: none;
+  background-color: #006699;
+}
+
+
+input[type="range"] {
+  width: 200px;
+  height: 8px;
+  background: #00aaff;
+  border-radius: 5px;
+  margin: 8px 0;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+input[type="range"]:focus {
+  outline: none;
+}
+
+/* Mute Checkbox Styling */
+input[type="checkbox"] {
+  margin-right: 6px;
+  accent-color: #ff4500;
+}
+
+/* Controls Container */
+div#sources {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 20px;
+  padding-bottom: 20px;  /* Add space at the bottom */
+}
+
+div#sources div {
+  background-color: rgba(0, 0, 0, 0.6);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 10px 0;
+  width: 90%;
+  box-sizing: border-box;
+}
+
+div#sources h3 {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 500;
+  text-align: center;
+  text-shadow: 4px 4px 10px rgba(0, 0, 0, 0.8);  /* Extreme shadow for h3 */
+}
+
+/* Master Controls Container */
+h3 {
+  font-size: 1.6rem;
+  font-weight: 600;
+  text-align: center;
+  margin-bottom: 20px;
+  text-shadow: 4px 4px 10px rgba(0, 0, 0, 0.8);  /* Extreme shadow for h3 */
+}
+
+/* Buttons for actions like Mute and Volume Adjustments */
+label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  margin-bottom: 8px;
+  display: inline-block;
+  text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.7); /* Extreme shadow for labels */
+}
+
+hr {
+  border: 1px solid #005577;
+  width: 100%;
+  margin-top: 15px;
+  margin-bottom: 10px;
+}
+
+/* Fixing layout responsiveness for smaller screens */
+@media (max-width: 768px) {
+  body {
+    padding: 10px;
+    flex-direction: column;
+  }
+
+  div#sources {
+    width: 100%;
+  }
+
+  h1 {
+    font-size: 1.8rem; /* Smaller header on mobile */
+  }
+
+  select,
+  input[type="range"] {
+    width: 100%;
+  }
+}
