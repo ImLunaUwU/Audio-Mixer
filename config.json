@@ -1,14 +1,21 @@
 {
   "inputs": [
     {
+      "deviceId": "12427b27de31669fb48b0b12f4545aa7831c4d4f0be34fbfb49845a1a7a613b1",
+      "monitorVolume": 0.55,
+      "outputVolume": 0.52,
+      "monitorMute": true,
+      "outputMute": true
+    },
+    {
       "deviceId": "default",
-      "monitorVolume": 1,
-      "outputVolume": 1,
+      "monitorVolume": 0.35,
+      "outputVolume": 0.42,
       "monitorMute": false,
       "outputMute": false
     },
     {
-      "deviceId": "fac6cf73e4845dadd14edb5360eede113abe92972e632727101ce7bad4685b6d",
+      "deviceId": "",
       "monitorVolume": 1,
       "outputVolume": 1,
       "monitorMute": false,

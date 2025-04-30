@@ -13,6 +13,10 @@ body {
   position: relative;
 }
 
+* {
+  user-select: none;
+}
+
 /* Fixed background fade to black */
 body::before {
   content: '';
@@ -104,6 +108,7 @@ div#sources div {
   margin: 10px 0;
   width: 90%;
   box-sizing: border-box;
+  text-align: center;
 }
 
 div#sources h3 {

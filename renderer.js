@@ -7,39 +7,38 @@ let config = {
   outputMasterVolume: 1
 };
 
+let deviceStates = {};
+
 async function setup() {
   config = await window.configAPI.loadConfig();
+  deviceStates = await window.deviceStateAPI.loadState();
 
   const devices = await navigator.mediaDevices.enumerateDevices();
   const inputs = devices.filter(d => d.kind === "audioinput");
   const outputs = devices.filter(d => d.kind === "audiooutput");
 
-  const input1Sel = document.getElementById("input1");
-  const input2Sel = document.getElementById("input2");
-  const input3Sel = document.getElementById("input3");
+  const inputSels = [
+    document.getElementById("input1"),
+    document.getElementById("input2"),
+    document.getElementById("input3")
+  ];
   const monitorSel = document.getElementById("monitorDevice");
   const mixedSel = document.getElementById("mixedOutputDevice");
   const container = document.getElementById("sources");
   const monitorMasterSlider = document.getElementById("monitorMaster");
   const outputMasterSlider = document.getElementById("outputMaster");
 
-  input1Sel.innerHTML = '<option value="">(None)</option>';
-  input2Sel.innerHTML = '<option value="">(None)</option>';
-  input3Sel.innerHTML = '<option value="">(None)</option>';
+  inputSels.forEach(sel => sel.innerHTML = '<option value="">(None)</option>');
   monitorSel.innerHTML = '<option value="">(Default)</option>';
   mixedSel.innerHTML = '<option value="">(Default)</option>';
 
   inputs.forEach(d => {
-    const opt1 = document.createElement("option");
-    opt1.value = d.deviceId;
-    opt1.textContent = d.label || "Unnamed Input";
-    input1Sel.appendChild(opt1);
-
-    const opt2 = opt1.cloneNode(true);
-    input2Sel.appendChild(opt2);
-
-    const opt3 = opt1.cloneNode(true);
-    input3Sel.appendChild(opt3);
+    inputSels.forEach(sel => {
+      const opt = document.createElement("option");
+      opt.value = d.deviceId;
+      opt.textContent = d.label || "Unnamed Input";
+      sel.appendChild(opt);
+    });
   });
 
   outputs.forEach(d => {
@@ -47,30 +46,37 @@ async function setup() {
     opt.value = d.deviceId;
     opt.textContent = d.label || "Unnamed Output";
     monitorSel.appendChild(opt);
-
-    const opt2 = opt.cloneNode(true);
-    mixedSel.appendChild(opt2);
+    mixedSel.appendChild(opt.cloneNode(true));
   });
 
-  input1Sel.value = config.inputs?.[0]?.deviceId || "";
-  input2Sel.value = config.inputs?.[1]?.deviceId || "";
-  input3Sel.value = config.inputs?.[2]?.deviceId || "";
+  for (let i = 0; i < 3; i++) {
+    const inputCfg = config.inputs[i] || {};
+    inputSels[i].value = inputCfg.deviceId || "";
+  }
   monitorSel.value = config.monitorDeviceId || "";
   mixedSel.value = config.mixedOutputDeviceId || "";
   monitorMasterSlider.value = config.monitorMasterVolume || 1;
   outputMasterSlider.value = config.outputMasterVolume || 1;
 
-  input1Sel.onchange = input2Sel.onchange = input3Sel.onchange = monitorSel.onchange = mixedSel.onchange = () => {
-    config.inputs = [
-      { deviceId: input1Sel.value, monitorVolume: 1, outputVolume: 1, monitorMute: false, outputMute: false },
-      { deviceId: input2Sel.value, monitorVolume: 1, outputVolume: 1, monitorMute: false, outputMute: false },
-      { deviceId: input3Sel.value, monitorVolume: 1, outputVolume: 1, monitorMute: false, outputMute: false }
-    ].filter(input => input.deviceId);
+  const updateInputsFromUI = () => {
+    for (let i = 0; i < 3; i++) {
+      if (!config.inputs[i]) config.inputs[i] = {
+        deviceId: "",
+        monitorVolume: 1,
+        outputVolume: 1,
+        monitorMute: false,
+        outputMute: false
+      };
+      config.inputs[i].deviceId = inputSels[i].value;
+    }
     config.monitorDeviceId = monitorSel.value;
     config.mixedOutputDeviceId = mixedSel.value;
     window.configAPI.saveConfig(config);
     location.reload();
   };
+
+  inputSels.forEach(sel => sel.onchange = updateInputsFromUI);
+  monitorSel.onchange = mixedSel.onchange = updateInputsFromUI;
 
   container.innerHTML = "";
 
@@ -95,45 +101,64 @@ async function setup() {
   monitorMasterGain.connect(monitorOut);
   outputMasterGain.connect(mixedOut);
 
-  for (let i = 0; i < config.inputs.length; i++) {
-    const deviceId = config.inputs[i].deviceId;
+  for (let i = 0; i < 3; i++) {
+    const inputCfg = config.inputs[i];
+    const deviceId = inputCfg.deviceId;
+    const div = document.createElement("div");
+    const label = inputs.find(d => d.deviceId === deviceId)?.label || `(Input ${i + 1})`;
+
+    div.innerHTML = `<h3>${label}</h3>`;
+
+    if (!deviceId) {
+      div.innerHTML += `<p>(No device selected)</p><hr>`;
+      container.appendChild(div);
+      continue;
+    }
+
+    const state = deviceStates[deviceId] || {
+      monitorVolume: inputCfg.monitorVolume,
+      outputVolume: inputCfg.outputVolume,
+      monitorMute: inputCfg.monitorMute,
+      outputMute: inputCfg.outputMute
+    };
+
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        deviceId: { exact: deviceId },  // Ensure the device is selected
-        echoCancellation: false,        // Disable echo cancellation
-        noiseSuppression: false,        // Disable noise suppression
-        autoGainControl: false          // Disable auto gain control
+        deviceId: { exact: deviceId },
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
       }
-    });    
+    });
     const input = audioCtx.createMediaStreamSource(stream);
-
-    const settings = config.inputs[i];
 
     const monitorGain = audioCtx.createGain();
     const outputGain = audioCtx.createGain();
-
-    monitorGain.gain.value = settings.monitorMute ? 0 : settings.monitorVolume;
-    outputGain.gain.value = settings.outputMute ? 0 : settings.outputVolume;
+    monitorGain.gain.value = state.monitorMute ? 0 : state.monitorVolume;
+    outputGain.gain.value = state.outputMute ? 0 : state.outputVolume;
 
     input.connect(monitorGain);
     input.connect(outputGain);
     monitorGain.connect(monitorMasterGain);
     outputGain.connect(outputMasterGain);
 
-    const div = document.createElement("div");
-    div.innerHTML = `
-      <h3>Input ${i + 1}</h3>
+    div.innerHTML += `
       <label>Monitor Volume:
-        <input type="range" min="0" max="1" step="0.01" value="${settings.monitorVolume}" class="monitorVol">
+        <input type="range" min="0" max="1" step="0.01" value="${state.monitorVolume}" class="monitorVol">
       </label>
-      <label><input type="checkbox" class="monitorMute" ${settings.monitorMute ? "checked" : ""}> Mute Monitor</label><br>
+      <label><input type="checkbox" class="monitorMute" ${state.monitorMute ? "checked" : ""}> Mute Monitor</label><br>
       <label>Output Volume:
-        <input type="range" min="0" max="1" step="0.01" value="${settings.outputVolume}" class="outputVol">
+        <input type="range" min="0" max="1" step="0.01" value="${state.outputVolume}" class="outputVol">
       </label>
-      <label><input type="checkbox" class="outputMute" ${settings.outputMute ? "checked" : ""}> Mute Output</label>
+      <label><input type="checkbox" class="outputMute" ${state.outputMute ? "checked" : ""}> Mute Output</label>
       <hr>
     `;
     container.appendChild(div);
+
+    inputCfg.monitorVolume = state.monitorVolume;
+    inputCfg.outputVolume = state.outputVolume;
+    inputCfg.monitorMute = state.monitorMute;
+    inputCfg.outputMute = state.outputMute;
 
     const monVol = div.querySelector(".monitorVol");
     const outVol = div.querySelector(".outputVol");
@@ -141,23 +166,31 @@ async function setup() {
     const outMute = div.querySelector(".outputMute");
 
     monVol.oninput = () => {
-      settings.monitorVolume = parseFloat(monVol.value);
-      monitorGain.gain.value = monMute.checked ? 0 : settings.monitorVolume;
+      inputCfg.monitorVolume = parseFloat(monVol.value);
+      monitorGain.gain.value = monMute.checked ? 0 : inputCfg.monitorVolume;
+      deviceStates[deviceId] = { ...inputCfg };
+      window.deviceStateAPI.saveState(deviceStates);
       window.configAPI.saveConfig(config);
     };
     outVol.oninput = () => {
-      settings.outputVolume = parseFloat(outVol.value);
-      outputGain.gain.value = outMute.checked ? 0 : settings.outputVolume;
+      inputCfg.outputVolume = parseFloat(outVol.value);
+      outputGain.gain.value = outMute.checked ? 0 : inputCfg.outputVolume;
+      deviceStates[deviceId] = { ...inputCfg };
+      window.deviceStateAPI.saveState(deviceStates);
       window.configAPI.saveConfig(config);
     };
     monMute.onchange = () => {
-      settings.monitorMute = monMute.checked;
-      monitorGain.gain.value = settings.monitorMute ? 0 : settings.monitorVolume;
+      inputCfg.monitorMute = monMute.checked;
+      monitorGain.gain.value = inputCfg.monitorMute ? 0 : inputCfg.monitorVolume;
+      deviceStates[deviceId] = { ...inputCfg };
+      window.deviceStateAPI.saveState(deviceStates);
       window.configAPI.saveConfig(config);
     };
     outMute.onchange = () => {
-      settings.outputMute = outMute.checked;
-      outputGain.gain.value = settings.outputMute ? 0 : settings.outputVolume;
+      inputCfg.outputMute = outMute.checked;
+      outputGain.gain.value = inputCfg.outputMute ? 0 : inputCfg.outputVolume;
+      deviceStates[deviceId] = { ...inputCfg };
+      window.deviceStateAPI.saveState(deviceStates);
       window.configAPI.saveConfig(config);
     };
   }
