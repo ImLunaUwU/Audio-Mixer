@@ -2,26 +2,30 @@
   "inputs": [
     {
       "deviceId": "12427b27de31669fb48b0b12f4545aa7831c4d4f0be34fbfb49845a1a7a613b1",
-      "monitorVolume": 0.55,
-      "outputVolume": 0.52,
+      "monitorVolume": 1,
+      "outputVolume": 1,
       "monitorMute": true,
       "outputMute": true
     },
     {
-      "deviceId": "default",
-      "monitorVolume": 0.35,
-      "outputVolume": 0.42,
-      "monitorMute": false,
-      "outputMute": false
-    },
-    {
-      "deviceId": "",
+      "deviceId": "c44647e2baf00d8824abe5cceb9a3f7ea88d7d3186b462f9651aec69ea20e3f2",
       "monitorVolume": 1,
       "outputVolume": 1,
+      "monitorMute": true,
+      "outputMute": true
+    },
+    {
+      "deviceId": "fac6cf73e4845dadd14edb5360eede113abe92972e632727101ce7bad4685b6d",
+      "monitorVolume": 0.68,
+      "outputVolume": 1,
       "monitorMute": false,
-      "outputMute": false
+      "outputMute": true
     }
   ],
-  "monitorDeviceId": "",
-  "mixedOutputDeviceId": ""
+  "monitorDeviceId": "default",
+  "mixedOutputDeviceId": "232432584d9c056418846842d7eeec55e2948dc78760746c95ab8090d7ad5046",
+  "monitorMasterVolume": 0.09,
+  "outputMasterVolume": 1,
+  "bassGain": 1.5,
+  "overloadGain": 1
 }

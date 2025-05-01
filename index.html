@@ -21,17 +21,38 @@
   </label><br>
   <label>Mixed Output Device:
     <select id="mixedOutputDevice"></select>
-  </label><br><br>
+  </label>
+  <br><br>
 
   <div>
     <h3>🔊 Master Controls</h3>
     <label>Monitor Master Volume:
       <input type="range" id="monitorMaster" min="0" max="1" step="0.01" value="1">
+      <span id="monitorMasterDisplay">100%</span>
     </label><br>
     <label>Output Master Volume:
       <input type="range" id="outputMaster" min="0" max="1" step="0.01" value="1">
-    </label><br><br>
+      <span id="outputMasterDisplay">100%</span>
+    </label>
   </div>
+
+  <div id="advancedControls">
+    <details>
+      <summary>🎛️ Advanced Controls</summary>
+      <div class="advanced-group">
+        <label>Bass (Low Frequency Boost/Cut):
+          <input type="range" id="bassControl" min="-10" max="10" step="0.1" value="0">
+          <span id="bassDisplay">0 dB</span>
+        </label><br>
+        <label>*OVERLOAD* (Post-Mix Gain):
+          <input type="range" id="overloadControl" min="1" max="3" step="0.01" value="1">
+          <span id="overloadDisplay">100%</span>
+        </label>
+        <button id="resetAdvanced">Reset Advanced Controls</button>
+      </div>
+    </details>
+  </div>
+  <br><br>
 
   <div id="sources"></div>
 

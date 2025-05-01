@@ -4,13 +4,15 @@ let config = {
   monitorDeviceId: null,
   mixedOutputDeviceId: null,
   monitorMasterVolume: 1,
-  outputMasterVolume: 1
+  outputMasterVolume: 1,
+  bassGain: 0,
+  overloadGain: 1
 };
 
 let deviceStates = {};
 
 async function setup() {
-  config = await window.configAPI.loadConfig();
+  config = Object.assign(config, await window.configAPI.loadConfig());
   deviceStates = await window.deviceStateAPI.loadState();
 
   const devices = await navigator.mediaDevices.enumerateDevices();
@@ -27,6 +29,10 @@ async function setup() {
   const container = document.getElementById("sources");
   const monitorMasterSlider = document.getElementById("monitorMaster");
   const outputMasterSlider = document.getElementById("outputMaster");
+  const bassSlider = document.getElementById("bassControl");
+  const overloadSlider = document.getElementById("overloadControl");
+  const bassDisplay = document.getElementById("bassDisplay");
+  const overloadDisplay = document.getElementById("overloadDisplay");
 
   inputSels.forEach(sel => sel.innerHTML = '<option value="">(None)</option>');
   monitorSel.innerHTML = '<option value="">(Default)</option>';
@@ -57,6 +63,13 @@ async function setup() {
   mixedSel.value = config.mixedOutputDeviceId || "";
   monitorMasterSlider.value = config.monitorMasterVolume || 1;
   outputMasterSlider.value = config.outputMasterVolume || 1;
+  bassSlider.value = config.bassGain || 0;
+  overloadSlider.value = config.overloadGain || 1;
+
+  document.getElementById("monitorMasterDisplay").textContent = `${Math.round(monitorMasterSlider.value * 100)}%`;
+  document.getElementById("outputMasterDisplay").textContent = `${Math.round(outputMasterSlider.value * 100)}%`;
+  bassDisplay.textContent = `${parseFloat(bassSlider.value).toFixed(1)} dB`;
+  overloadDisplay.textContent = `${Math.round(overloadSlider.value * 100)}%`;
 
   const updateInputsFromUI = () => {
     for (let i = 0; i < 3; i++) {
@@ -85,21 +98,68 @@ async function setup() {
   monitorMasterGain.gain.value = parseFloat(monitorMasterSlider.value);
   outputMasterGain.gain.value = parseFloat(outputMasterSlider.value);
 
-  monitorMasterSlider.oninput = () => {
-    monitorMasterGain.gain.value = parseFloat(monitorMasterSlider.value);
-    config.monitorMasterVolume = parseFloat(monitorMasterSlider.value);
-    window.configAPI.saveConfig(config);
-  };
-  outputMasterSlider.oninput = () => {
-    outputMasterGain.gain.value = parseFloat(outputMasterSlider.value);
-    config.outputMasterVolume = parseFloat(outputMasterSlider.value);
-    window.configAPI.saveConfig(config);
-  };
+  const bassEQMonitor = audioCtx.createBiquadFilter();
+  bassEQMonitor.type = "lowshelf";
+  bassEQMonitor.frequency.value = 250;
+  bassEQMonitor.gain.value = parseFloat(bassSlider.value);
+
+  const bassEQOutput = audioCtx.createBiquadFilter();
+  bassEQOutput.type = "lowshelf";
+  bassEQOutput.frequency.value = 250;
+  bassEQOutput.gain.value = parseFloat(bassSlider.value);
+
+  const overloadGainMonitor = audioCtx.createGain();
+  overloadGainMonitor.gain.value = parseFloat(overloadSlider.value);
+
+  const overloadGainOutput = audioCtx.createGain();
+  overloadGainOutput.gain.value = parseFloat(overloadSlider.value);
 
   const monitorOut = audioCtx.createMediaStreamDestination();
   const mixedOut = audioCtx.createMediaStreamDestination();
+
+  bassEQMonitor.connect(overloadGainMonitor);
+  overloadGainMonitor.connect(monitorMasterGain);
   monitorMasterGain.connect(monitorOut);
+
+  bassEQOutput.connect(overloadGainOutput);
+  overloadGainOutput.connect(outputMasterGain);
   outputMasterGain.connect(mixedOut);
+
+  monitorMasterSlider.oninput = () => {
+    const value = parseFloat(monitorMasterSlider.value);
+    monitorMasterGain.gain.value = value;
+    config.monitorMasterVolume = value;
+    document.getElementById("monitorMasterDisplay").textContent = `${Math.round(value * 100)}%`;
+    window.configAPI.saveConfig(config);
+  };
+
+  outputMasterSlider.oninput = () => {
+    const value = parseFloat(outputMasterSlider.value);
+    outputMasterGain.gain.value = value;
+    config.outputMasterVolume = value;
+    document.getElementById("outputMasterDisplay").textContent = `${Math.round(value * 100)}%`;
+    window.configAPI.saveConfig(config);
+  };
+
+  bassSlider.oninput = () => {
+    let value = parseFloat(bassSlider.value);
+    if (Math.abs(value) < 0.5) value = 0;
+    bassSlider.value = value;
+    bassEQMonitor.gain.value = value;
+    bassEQOutput.gain.value = value;
+    config.bassGain = value;
+    bassDisplay.textContent = `${value.toFixed(1)} dB`;
+    window.configAPI.saveConfig(config);
+  };
+
+  overloadSlider.oninput = () => {
+    const value = parseFloat(overloadSlider.value);
+    overloadGainMonitor.gain.value = value;
+    overloadGainOutput.gain.value = value;
+    config.overloadGain = value;
+    overloadDisplay.textContent = `${Math.round(value * 100)}%`;
+    window.configAPI.saveConfig(config);
+  };
 
   for (let i = 0; i < 3; i++) {
     const inputCfg = config.inputs[i];
@@ -139,16 +199,19 @@ async function setup() {
 
     input.connect(monitorGain);
     input.connect(outputGain);
-    monitorGain.connect(monitorMasterGain);
-    outputGain.connect(outputMasterGain);
+
+    monitorGain.connect(bassEQMonitor);
+    outputGain.connect(bassEQOutput);
 
     div.innerHTML += `
       <label>Monitor Volume:
         <input type="range" min="0" max="1" step="0.01" value="${state.monitorVolume}" class="monitorVol">
+        <span class="monitorVolDisplay">${Math.round(state.monitorVolume * 100)}%</span>
       </label>
       <label><input type="checkbox" class="monitorMute" ${state.monitorMute ? "checked" : ""}> Mute Monitor</label><br>
       <label>Output Volume:
         <input type="range" min="0" max="1" step="0.01" value="${state.outputVolume}" class="outputVol">
+        <span class="outputVolDisplay">${Math.round(state.outputVolume * 100)}%</span>
       </label>
       <label><input type="checkbox" class="outputMute" ${state.outputMute ? "checked" : ""}> Mute Output</label>
       <hr>
@@ -168,17 +231,21 @@ async function setup() {
     monVol.oninput = () => {
       inputCfg.monitorVolume = parseFloat(monVol.value);
       monitorGain.gain.value = monMute.checked ? 0 : inputCfg.monitorVolume;
+      monVol.nextElementSibling.textContent = `${Math.round(monVol.value * 100)}%`;
       deviceStates[deviceId] = { ...inputCfg };
       window.deviceStateAPI.saveState(deviceStates);
       window.configAPI.saveConfig(config);
     };
+
     outVol.oninput = () => {
       inputCfg.outputVolume = parseFloat(outVol.value);
       outputGain.gain.value = outMute.checked ? 0 : inputCfg.outputVolume;
+      outVol.nextElementSibling.textContent = `${Math.round(outVol.value * 100)}%`;
       deviceStates[deviceId] = { ...inputCfg };
       window.deviceStateAPI.saveState(deviceStates);
       window.configAPI.saveConfig(config);
     };
+
     monMute.onchange = () => {
       inputCfg.monitorMute = monMute.checked;
       monitorGain.gain.value = inputCfg.monitorMute ? 0 : inputCfg.monitorVolume;
@@ -186,6 +253,7 @@ async function setup() {
       window.deviceStateAPI.saveState(deviceStates);
       window.configAPI.saveConfig(config);
     };
+
     outMute.onchange = () => {
       inputCfg.outputMute = outMute.checked;
       outputGain.gain.value = inputCfg.outputMute ? 0 : inputCfg.outputVolume;
@@ -215,6 +283,23 @@ async function setup() {
     } catch (err) {
       console.warn("Failed to set mixed output device:", err);
     }
+  }
+
+  const resetButton = document.getElementById("resetAdvanced");
+  if (resetButton) {
+    resetButton.onclick = () => {
+      config.bassGain = 0;
+      config.overloadGain = 1;
+      bassEQMonitor.gain.value = 0;
+      bassEQOutput.gain.value = 0;
+      overloadGainMonitor.gain.value = 1;
+      overloadGainOutput.gain.value = 1;
+      bassSlider.value = 0;
+      overloadSlider.value = 1;
+      bassDisplay.textContent = "0 dB";
+      overloadDisplay.textContent = "100%";
+      window.configAPI.saveConfig(config);
+    };
   }
 }
 

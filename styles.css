@@ -164,3 +164,64 @@ hr {
     width: 100%;
   }
 }
+
+div#advancedControls {
+  margin-top: 20px;
+  width: 90%;
+  background-color: rgba(0, 0, 0, 0.4);
+  padding: 15px;
+  border-radius: 10px;
+  color: white;
+  box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  width: auto;
+}
+
+div#advancedControls summary {
+  font-weight: bold;
+  font-size: 1.1rem;
+  cursor: pointer;
+  text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.8);
+  margin-bottom: 10px;
+}
+
+.advanced-group label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.7);
+}
+
+.advanced-group input[type="range"] {
+  flex: 1;
+  max-width: 250px;
+}
+
+.advanced-group span {
+  width: 60px;
+  text-align: right;
+  font-weight: bold;
+}
+
+.advanced-group button {
+  font-size: 0.9rem;
+  padding: 6px 16px;
+  background-color: #005577;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-top: 10px;
+  box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.5);
+  text-shadow: 2px 2px 6px rgba(0, 0, 0, 0.8);
+}
+
+.advanced-group button:hover {
+  background-color: #0077aa;
+}

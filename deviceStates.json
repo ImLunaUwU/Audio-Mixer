@@ -1,16 +1,30 @@
 {
-  "default": {
-    "deviceId": "default",
-    "monitorVolume": 0.35,
-    "outputVolume": 0.42,
-    "monitorMute": false,
+  "c44647e2baf00d8824abe5cceb9a3f7ea88d7d3186b462f9651aec69ea20e3f2": {
+    "deviceId": "c44647e2baf00d8824abe5cceb9a3f7ea88d7d3186b462f9651aec69ea20e3f2",
+    "monitorVolume": 1,
+    "outputVolume": 1,
+    "monitorMute": true,
+    "outputMute": true
+  },
+  "communications": {
+    "deviceId": "communications",
+    "monitorVolume": 1,
+    "outputVolume": 1,
+    "monitorMute": true,
     "outputMute": false
   },
   "12427b27de31669fb48b0b12f4545aa7831c4d4f0be34fbfb49845a1a7a613b1": {
     "deviceId": "12427b27de31669fb48b0b12f4545aa7831c4d4f0be34fbfb49845a1a7a613b1",
-    "monitorVolume": 0.55,
-    "outputVolume": 0.52,
+    "monitorVolume": 1,
+    "outputVolume": 1,
     "monitorMute": true,
+    "outputMute": true
+  },
+  "fac6cf73e4845dadd14edb5360eede113abe92972e632727101ce7bad4685b6d": {
+    "deviceId": "fac6cf73e4845dadd14edb5360eede113abe92972e632727101ce7bad4685b6d",
+    "monitorVolume": 0.68,
+    "outputVolume": 1,
+    "monitorMute": false,
     "outputMute": true
   }
 }
