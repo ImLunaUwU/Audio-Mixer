@@ -1,6 +1,6 @@
 {
   "name": "audio-mixer",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Little audio mixer I made for fun, for my love.",
   "author": "Luna",
   "main": "main.js",

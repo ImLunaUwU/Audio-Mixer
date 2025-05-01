@@ -4,7 +4,8 @@
     "monitorVolume": 1,
     "outputVolume": 1,
     "monitorMute": true,
-    "outputMute": true
+    "outputMute": true,
+    "forceMono": true
   },
   "communications": {
     "deviceId": "communications",
@@ -18,13 +19,15 @@
     "monitorVolume": 1,
     "outputVolume": 1,
     "monitorMute": true,
-    "outputMute": true
+    "outputMute": false,
+    "forceMono": false
   },
   "fac6cf73e4845dadd14edb5360eede113abe92972e632727101ce7bad4685b6d": {
     "deviceId": "fac6cf73e4845dadd14edb5360eede113abe92972e632727101ce7bad4685b6d",
     "monitorVolume": 0.68,
     "outputVolume": 1,
     "monitorMute": false,
-    "outputMute": true
+    "outputMute": true,
+    "forceMono": false
   }
 }
