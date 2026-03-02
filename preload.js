@@ -8,3 +8,7 @@ contextBridge.exposeInMainWorld("deviceStateAPI", {
   loadState: () => ipcRenderer.invoke("deviceState:load"),
   saveState: (state) => ipcRenderer.send("deviceState:save", state)
 });
+
+contextBridge.exposeInMainWorld("appAPI", {
+  isDev: () => ipcRenderer.invoke("app:isDev")
+});

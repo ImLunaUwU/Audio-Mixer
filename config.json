@@ -1,15 +1,16 @@
 {
+  "version": 2,
   "inputs": [
     {
-      "deviceId": "12427b27de31669fb48b0b12f4545aa7831c4d4f0be34fbfb49845a1a7a613b1",
+      "deviceId": "531eb2b9466036286f93ce1baddeb44022862b5b64e8e14ce29c26b1671268a1",
       "monitorVolume": 1,
       "outputVolume": 1,
-      "monitorMute": true,
-      "outputMute": false,
+      "monitorMute": false,
+      "outputMute": true,
       "forceMono": false
     },
     {
-      "deviceId": "c44647e2baf00d8824abe5cceb9a3f7ea88d7d3186b462f9651aec69ea20e3f2",
+      "deviceId": "",
       "monitorVolume": 1,
       "outputVolume": 1,
       "monitorMute": true,
@@ -17,7 +18,7 @@
       "forceMono": true
     },
     {
-      "deviceId": "fac6cf73e4845dadd14edb5360eede113abe92972e632727101ce7bad4685b6d",
+      "deviceId": "",
       "monitorVolume": 0.68,
       "outputVolume": 1,
       "monitorMute": false,
@@ -26,9 +27,16 @@
     }
   ],
   "monitorDeviceId": "default",
-  "mixedOutputDeviceId": "5d10688323fdc85afb6949ab639a1c6135176f402fc3e25a0b4b77c3251413a0",
+  "mixedOutputDeviceId": "",
   "monitorMasterVolume": 0.13,
   "outputMasterVolume": 1,
-  "bassGain": 0,
-  "overloadGain": 1
+  "eq": {
+    "low": 0,
+    "mid": 0,
+    "high": 0
+  },
+  "eqCustomPresets": [],
+  "presets": [],
+  "overloadGain": 1,
+  "compactMode": false
 }

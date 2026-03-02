@@ -29,5 +29,15 @@
     "monitorMute": false,
     "outputMute": true,
     "forceMono": false
+  },
+  "531eb2b9466036286f93ce1baddeb44022862b5b64e8e14ce29c26b1671268a1": {
+    "deviceId": "531eb2b9466036286f93ce1baddeb44022862b5b64e8e14ce29c26b1671268a1",
+    "monitorVolume": 1,
+    "outputVolume": 1,
+    "monitorMute": false,
+    "outputMute": true,
+    "forceMono": false,
+    "enabled": true,
+    "label": "CABLE-A Output (VB-Audio Virtual Cable A)"
   }
 }
