@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const squirrelStartup = require('electron-squirrel-startup');
@@ -22,6 +22,7 @@ const defaultInput = () => ({
 const DEFAULT_CONFIG = {
   version: CONFIG_VERSION,
   inputs: [defaultInput(), defaultInput(), defaultInput()],
+  showMultichannelDevices: false,
   monitorDeviceId: null,
   mixedOutputDeviceId: null,
   monitorMasterVolume: 1,
@@ -37,6 +38,8 @@ const DEFAULT_CONFIG = {
 };
 
 let win;
+let tray;
+let isQuitting = false;
 let configCache = { ...DEFAULT_CONFIG };
 
 function readJsonSafe(filePath, fallbackValue) {
@@ -98,7 +101,63 @@ function writeConfig(config) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
+function getWindowsLoginItemOptions(openAtLogin) {
+  return {
+    openAtLogin,
+    path: process.execPath,
+    args: ["--hidden"]
+  };
+}
+
+function resolveTrayIcon() {
+  const candidates = [
+    path.join(__dirname, "assets", "icon.ico"),
+    path.join(process.resourcesPath || "", "assets", "icon.ico"),
+    path.join(process.resourcesPath || "", "app.asar", "assets", "icon.ico"),
+    process.execPath
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      const image = nativeImage.createFromPath(candidate);
+      if (!image.isEmpty()) return image;
+    } catch (_) {}
+  }
+
+  return nativeImage.createEmpty();
+}
+
+function showMainWindow() {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function createTray() {
+  if (tray) return;
+  const trayIcon = resolveTrayIcon();
+  tray = new Tray(trayIcon);
+  tray.setToolTip("Luna's Audio Mixer");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    {
+      label: "Show Audio Mixer",
+      click: () => showMainWindow()
+    },
+    { type: "separator" },
+    {
+      label: "Exit",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]));
+  tray.on("double-click", () => showMainWindow());
+}
+
 function createWindow() {
+  const startHidden = process.argv.includes("--hidden");
   win = new BrowserWindow({
     title: `Luna's Audio Mixer v${version}`,
     width: 1000,
@@ -120,7 +179,15 @@ function createWindow() {
   }
 
   win.once('ready-to-show', () => {
-    win.show();
+    if (!startHidden) {
+      win.show();
+    }
+  });
+
+  win.on("close", event => {
+    if (isQuitting) return;
+    event.preventDefault();
+    win.hide();
   });
 }
 
@@ -149,6 +216,49 @@ ipcMain.on("deviceState:save", (event, deviceState) => {
 
 ipcMain.handle("app:isDev", () => isDev);
 
+ipcMain.handle("app:getStartOnBoot", () => {
+  try {
+    if (process.platform === "win32") {
+      const winOptions = getWindowsLoginItemOptions(false);
+      return !!app.getLoginItemSettings({
+        path: winOptions.path,
+        args: winOptions.args
+      }).openAtLogin;
+    }
+    return !!app.getLoginItemSettings().openAtLogin;
+  } catch (_) {
+    return false;
+  }
+});
+
+ipcMain.handle("app:setStartOnBoot", (event, enabled) => {
+  const openAtLogin = !!enabled;
+  try {
+    if (process.platform === "win32") {
+      const winOptions = getWindowsLoginItemOptions(openAtLogin);
+      app.setLoginItemSettings(winOptions);
+    } else {
+      app.setLoginItemSettings({
+        openAtLogin,
+        openAsHidden: true
+      });
+    }
+  } catch (_) {}
+
+  try {
+    if (process.platform === "win32") {
+      const winOptions = getWindowsLoginItemOptions(false);
+      return !!app.getLoginItemSettings({
+        path: winOptions.path,
+        args: winOptions.args
+      }).openAtLogin;
+    }
+    return !!app.getLoginItemSettings().openAtLogin;
+  } catch (_) {
+    return false;
+  }
+});
+
 if (squirrelStartup) app.quit();
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -157,12 +267,34 @@ if (!gotTheLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-      if (win) {
-          if (win.isMinimized()) win.restore();
-          win.focus();
-      }
+    showMainWindow();
   });
-app.whenReady().then(() => {
-  createWindow();
-});
+
+  app.on("before-quit", () => {
+    isQuitting = true;
+  });
+
+  app.whenReady().then(() => {
+    createWindow();
+    createTray();
+
+    app.on("activate", () => {
+      if (!win || win.isDestroyed()) {
+        createWindow();
+      } else {
+        showMainWindow();
+      }
+    });
+  });
+
+  app.on("window-all-closed", event => {
+    event.preventDefault();
+  });
+
+  app.on("quit", () => {
+    if (tray) {
+      tray.destroy();
+      tray = null;
+    }
+  });
 }

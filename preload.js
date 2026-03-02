@@ -10,5 +10,7 @@ contextBridge.exposeInMainWorld("deviceStateAPI", {
 });
 
 contextBridge.exposeInMainWorld("appAPI", {
-  isDev: () => ipcRenderer.invoke("app:isDev")
+  isDev: () => ipcRenderer.invoke("app:isDev"),
+  getStartOnBoot: () => ipcRenderer.invoke("app:getStartOnBoot"),
+  setStartOnBoot: (enabled) => ipcRenderer.invoke("app:setStartOnBoot", !!enabled)
 });

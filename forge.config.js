@@ -3,10 +3,10 @@ const { version } = require("./package.json");
 module.exports = {
     name: "Audio Mixer",
     version: `${version}`,
-    description: "Little audio mixer I made for fun, for my love.",
+  description: "Desktop audio routing and mixing app.",
     author: "Luna",
     main: "main.js",
-    productName: "Lunas Audio Mixer",
+  productName: "Audio Mixer",
     executableName: "AudioMixer",
     scripts: {
       make: "electron-forge make",
@@ -17,6 +17,14 @@ module.exports = {
       executableName: "AudioMixer",
       appBundleId: "dev.imluna.audio-mixer",
       icon: "./assets/icon",
+      win32metadata: {
+        CompanyName: "Luna",
+        FileDescription: "Audio Mixer",
+        ProductName: "Audio Mixer",
+        InternalName: "AudioMixer",
+        OriginalFilename: "AudioMixer.exe",
+        LegalCopyright: "Copyright (c) 2026 Luna. All rights reserved."
+      },
       asar: {
         unpack: "**/*.json"
       },

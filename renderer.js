@@ -5,6 +5,7 @@ let config = {
   version: CONFIG_VERSION,
   inputs: [],
   compactMode: false,
+  showMultichannelDevices: false,
   monitorDeviceId: null,
   mixedOutputDeviceId: null,
   monitorMasterVolume: 1,
@@ -36,6 +37,8 @@ let saveIndicatorTimer = null;
 const observedTracks = new WeakSet();
 const recoveryDebounceMap = {};
 const historicalDeviceLabels = {};
+const inputChannelCountCache = {};
+const outputChannelCountCache = {};
 
 const ui = {
   inputSels: [],
@@ -72,6 +75,8 @@ const ui = {
   statusText: null,
   saveStateText: null,
   compactModeToggle: null,
+  startOnBootToggle: null,
+  showMultichannelDevicesToggle: null,
   toastContainer: null
 };
 
@@ -138,6 +143,65 @@ function getInputConfig(index) {
     config.inputs[index] = getDefaultInputConfig();
   }
   return config.inputs[index];
+}
+
+async function getInputDeviceChannelCount(deviceId) {
+  if (!deviceId) return 2;
+  if (Number.isFinite(inputChannelCountCache[deviceId])) return inputChannelCountCache[deviceId];
+
+  const existingStream = activeStreams[deviceId];
+  if (existingStream && hasLiveTrack(existingStream)) {
+    const liveTrack = existingStream.getAudioTracks()[0];
+    const liveCount = liveTrack?.getSettings?.().channelCount;
+    if (Number.isFinite(liveCount) && liveCount > 0) {
+      inputChannelCountCache[deviceId] = liveCount;
+      return liveCount;
+    }
+  }
+
+  try {
+    const probeStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: { exact: deviceId },
+        channelCount: { ideal: 8 }
+      }
+    });
+    const probeTrack = probeStream.getAudioTracks()[0];
+    const channelCount = probeTrack?.getSettings?.().channelCount;
+    probeStream.getTracks().forEach(track => track.stop());
+    const normalized = Number.isFinite(channelCount) && channelCount > 0 ? channelCount : 2;
+    inputChannelCountCache[deviceId] = normalized;
+    return normalized;
+  } catch (_) {
+    inputChannelCountCache[deviceId] = 2;
+    return 2;
+  }
+}
+
+function inferChannelsFromLabel(label = "") {
+  const normalized = String(label || "").toLowerCase();
+  if (!normalized) return 2;
+
+  const explicitChannelMatch = normalized.match(/\b(\d{1,2})\s*(?:ch|channel|channels)\b/);
+  if (explicitChannelMatch) {
+    const explicitCount = parseInt(explicitChannelMatch[1], 10);
+    if (Number.isFinite(explicitCount) && explicitCount > 0) return explicitCount;
+  }
+
+  if (/(^|\b)mono(\b|$)|\b1\s*(ch|channel)\b/.test(normalized)) return 1;
+  if (/\b(stereo|2\.0|2ch|2 channel)\b/.test(normalized)) return 2;
+  if (/\b(3\.1|4\.0|4\.1|5\.1|6\.1|7\.1|surround|quad|atmos|dolby|dts|4ch|6ch|8ch)\b/.test(normalized)) return 6;
+  return 2;
+}
+
+function getOutputDeviceChannelCount(device) {
+  const deviceId = device?.deviceId;
+  if (!deviceId) return 2;
+  if (Number.isFinite(outputChannelCountCache[deviceId])) return outputChannelCountCache[deviceId];
+
+  const inferred = inferChannelsFromLabel(device?.label);
+  outputChannelCountCache[deviceId] = inferred;
+  return inferred;
 }
 
 function setStatus(message) {
@@ -313,6 +377,8 @@ function initialiseUiRefs() {
   ui.statusText = document.getElementById("statusText");
   ui.saveStateText = document.getElementById("saveStateText");
   ui.compactModeToggle = document.getElementById("compactModeToggle");
+  ui.startOnBootToggle = document.getElementById("startOnBootToggle");
+  ui.showMultichannelDevicesToggle = document.getElementById("showMultichannelDevices");
   ui.toastContainer = document.getElementById("toastContainer");
 }
 
@@ -330,6 +396,9 @@ function applyUiFromConfig() {
   ui.eqHighDisplay.textContent = `${parseFloat(config.eq.high).toFixed(1)} dB`;
   ui.overloadDisplay.textContent = `${Math.round(config.overloadGain * 100)}%`;
   applyCompactMode(config.compactMode);
+  if (ui.showMultichannelDevicesToggle) {
+    ui.showMultichannelDevicesToggle.checked = !!config.showMultichannelDevices;
+  }
 }
 
 function getPresetSnapshot() {
@@ -884,11 +953,18 @@ function findOutputReplacement(oldDeviceId, outputs) {
   return match ? match.deviceId : "";
 }
 
+function isReservedDeviceId(deviceId) {
+  return deviceId === "default" || deviceId === "communications";
+}
+
 async function refreshDeviceLists({ rebindMissing = true, notify = false } = {}) {
   setStatus("Refreshing devices...");
   const devices = await navigator.mediaDevices.enumerateDevices();
-  const inputs = devices.filter(d => d.kind === "audioinput");
-  const outputs = devices.filter(d => d.kind === "audiooutput");
+  const allInputs = devices.filter(d => d.kind === "audioinput" && !isReservedDeviceId(d.deviceId));
+  const inputCounts = await Promise.all(allInputs.map(device => getInputDeviceChannelCount(device.deviceId)));
+  const inputs = allInputs.filter((_, idx) => config.showMultichannelDevices || inputCounts[idx] <= 2);
+  const allOutputs = devices.filter(d => d.kind === "audiooutput" && !isReservedDeviceId(d.deviceId));
+  const outputs = allOutputs.filter(device => config.showMultichannelDevices || getOutputDeviceChannelCount(device) <= 2);
 
   inputs.forEach(device => {
     historicalDeviceLabels[device.deviceId] = device.label || "Unnamed Input";
@@ -907,6 +983,9 @@ async function refreshDeviceLists({ rebindMissing = true, notify = false } = {})
 
   for (let i = 0; i < 3; i++) {
     const cfg = getInputConfig(i);
+    if (isReservedDeviceId(cfg.deviceId)) {
+      cfg.deviceId = "";
+    }
     if (cfg.deviceId && validInputIds.has(cfg.deviceId)) {
       usedInputIds.add(cfg.deviceId);
       continue;
@@ -941,6 +1020,9 @@ async function refreshDeviceLists({ rebindMissing = true, notify = false } = {})
   }
 
   const validOutputIds = new Set(outputs.map(d => d.deviceId));
+  if (isReservedDeviceId(config.monitorDeviceId)) config.monitorDeviceId = "";
+  if (isReservedDeviceId(config.mixedOutputDeviceId)) config.mixedOutputDeviceId = "";
+
   if (config.monitorDeviceId && !validOutputIds.has(config.monitorDeviceId)) {
     const replacement = rebindMissing ? findOutputReplacement(config.monitorDeviceId, outputs) : "";
     config.monitorDeviceId = replacement || "";
@@ -1118,6 +1200,29 @@ function setupUiHandlers() {
     };
   }
 
+  if (ui.showMultichannelDevicesToggle) {
+    ui.showMultichannelDevicesToggle.onchange = async () => {
+      config.showMultichannelDevices = ui.showMultichannelDevicesToggle.checked;
+      saveConfig();
+      setStatus(config.showMultichannelDevices
+        ? "Showing all input/output channel counts"
+        : "Showing mono/stereo input/output devices only");
+      await refreshDeviceLists({ rebindMissing: false, notify: false });
+    };
+  }
+
+  if (ui.startOnBootToggle && window.appAPI && typeof window.appAPI.setStartOnBoot === "function") {
+    ui.startOnBootToggle.onchange = async () => {
+      try {
+        const applied = await window.appAPI.setStartOnBoot(ui.startOnBootToggle.checked);
+        ui.startOnBootToggle.checked = !!applied;
+        setStatus(applied ? "Start on boot enabled" : "Start on boot disabled");
+      } catch (error) {
+        reportError("Start on boot", error, "Failed to update start on boot setting.");
+      }
+    };
+  }
+
   ui.monitorMasterSlider.oninput = () => {
     config.monitorMasterVolume = parseFloat(ui.monitorMasterSlider.value);
     ui.monitorMasterDisplay.textContent = `${Math.round(config.monitorMasterVolume * 100)}%`;
@@ -1280,6 +1385,7 @@ async function setup() {
       ...loadedConfig,
       version: CONFIG_VERSION,
       compactMode: !!loadedConfig?.compactMode,
+      showMultichannelDevices: !!loadedConfig?.showMultichannelDevices,
       eq: {
         low: Number.isFinite(loadedConfig?.eq?.low) ? loadedConfig.eq.low : (Number.isFinite(loadedConfig?.bassGain) ? loadedConfig.bassGain : 0),
         mid: Number.isFinite(loadedConfig?.eq?.mid) ? loadedConfig.eq.mid : 0,
@@ -1297,6 +1403,13 @@ async function setup() {
     }
 
     applyUiFromConfig();
+    if (ui.startOnBootToggle && window.appAPI && typeof window.appAPI.getStartOnBoot === "function") {
+      try {
+        ui.startOnBootToggle.checked = !!(await window.appAPI.getStartOnBoot());
+      } catch (_) {
+        ui.startOnBootToggle.checked = false;
+      }
+    }
     refreshPresetSelect();
     refreshEqPresetSelect();
     setupUiHandlers();

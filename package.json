@@ -1,7 +1,7 @@
 {
   "name": "audio-mixer",
   "version": "1.0.5",
-  "description": "Little audio mixer I made for fun, for my love.",
+  "description": "Desktop audio routing and mixing app.",
   "author": "Luna",
   "main": "main.js",
   "productName": "Audio Mixer",

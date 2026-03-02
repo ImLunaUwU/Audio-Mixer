@@ -286,6 +286,15 @@ input[type="range"]::-webkit-slider-thumb {
   gap: 8px;
 }
 
+.advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
 .advanced-group label {
   display: grid;
   grid-template-columns: 190px minmax(160px, 1fr) 60px;

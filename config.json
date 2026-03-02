@@ -26,7 +26,8 @@
       "forceMono": false
     }
   ],
-  "monitorDeviceId": "default",
+  "showMultichannelDevices": false,
+  "monitorDeviceId": "",
   "mixedOutputDeviceId": "",
   "monitorMasterVolume": 0.13,
   "outputMasterVolume": 1,
