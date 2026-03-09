@@ -36,6 +36,10 @@
           <select id="monitorDevice"></select>
         </label>
         <label class="field">
+          <span>Monitor 2 Output Device</span>
+          <select id="monitor2Device"></select>
+        </label>
+        <label class="field">
           <span>Mixed Output Device</span>
           <select id="mixedOutputDevice"></select>
         </label>
@@ -72,6 +76,10 @@
         <input type="range" id="monitorMaster" min="0" max="1" step="0.01" value="1">
         <span id="monitorMasterDisplay">100%</span>
       </label>
+      <label class="slider-row">Monitor 2 Master Volume:
+        <input type="range" id="monitor2Master" min="0" max="1" step="0.01" value="1">
+        <span id="monitor2MasterDisplay">100%</span>
+      </label>
       <label class="slider-row">Output Master Volume:
         <input type="range" id="outputMaster" min="0" max="1" step="0.01" value="1">
         <span id="outputMasterDisplay">100%</span>
@@ -81,6 +89,11 @@
           <span>Monitor Level</span>
           <div class="meterTrack"><div id="monitorMeterFill" class="meterFill"></div></div>
           <span class="meterMeta"><span id="monitorMeterText" class="meterValue">0.0 dB</span><span id="monitorClip" class="clipIndicator">CLIP</span></span>
+        </div>
+        <div class="master-meter">
+          <span>Monitor 2 Level</span>
+          <div class="meterTrack"><div id="monitor2MeterFill" class="meterFill"></div></div>
+          <span class="meterMeta"><span id="monitor2MeterText" class="meterValue">0.0 dB</span><span id="monitor2Clip" class="clipIndicator">CLIP</span></span>
         </div>
         <div class="master-meter">
           <span>Output Level</span>
@@ -99,6 +112,9 @@
           </label>
           <label class="advanced-toggle">
             <input type="checkbox" id="showMultichannelDevices"> Show input/output devices with more than 2 channels
+          </label>
+          <label class="advanced-toggle">
+            <input type="checkbox" id="enforceRoutingSafetyToggle"> Enforce routing safety restrictions (duplicates + cable loop guard)
           </label>
           <label>EQ Preset:
             <select id="eqPresetSelect">

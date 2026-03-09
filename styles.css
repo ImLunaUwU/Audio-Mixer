@@ -116,6 +116,16 @@ input[type="range"]:focus {
   outline-offset: 1px;
 }
 
+select option:disabled {
+  color: rgba(255, 193, 193, 0.9);
+  background: rgba(92, 20, 20, 0.55);
+  font-style: italic;
+}
+
+select option:disabled:hover {
+  background: rgba(130, 28, 28, 0.78);
+}
+
 button {
   min-height: 40px;
   border: 1px solid rgba(255, 255, 255, 0.28);

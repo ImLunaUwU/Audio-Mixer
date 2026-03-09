@@ -1,35 +1,44 @@
 {
-  "version": 2,
+  "version": 3,
   "inputs": [
     {
       "deviceId": "531eb2b9466036286f93ce1baddeb44022862b5b64e8e14ce29c26b1671268a1",
       "monitorVolume": 1,
+      "monitor2Volume": 1,
       "outputVolume": 1,
       "monitorMute": false,
-      "outputMute": true,
+      "monitor2Mute": false,
+      "outputMute": false,
+      "forceMono": false
+    },
+    {
+      "deviceId": "560b13509cc9fa2a6056f7d474b3231696f293a1b8350cc178ffc11916619539",
+      "monitorVolume": 1,
+      "monitor2Volume": 1,
+      "outputVolume": 1,
+      "monitorMute": true,
+      "monitor2Mute": true,
+      "outputMute": false,
       "forceMono": false
     },
     {
       "deviceId": "",
-      "monitorVolume": 1,
-      "outputVolume": 1,
-      "monitorMute": true,
-      "outputMute": true,
-      "forceMono": true
-    },
-    {
-      "deviceId": "",
       "monitorVolume": 0.68,
+      "monitor2Volume": 0.68,
       "outputVolume": 1,
       "monitorMute": false,
+      "monitor2Mute": false,
       "outputMute": true,
       "forceMono": false
     }
   ],
   "showMultichannelDevices": false,
-  "monitorDeviceId": "",
-  "mixedOutputDeviceId": "",
+  "enforceRoutingSafety": true,
+  "monitorDeviceId": "ead758316d1a5a5de09fa6f7750579c8a5f3ac4c4b64689c85bf2afcff4185a8",
+  "monitor2DeviceId": "9358011675c548321f709e08876fdb3bc7262d39fd3188ffd8ab88c870b8edc6",
+  "mixedOutputDeviceId": "ba4c827a3cdd03c65026d1edff210b0454dd51d295769c9106ba899e0d7534ff",
   "monitorMasterVolume": 0.13,
+  "monitor2MasterVolume": 0.42,
   "outputMasterVolume": 1,
   "eq": {
     "low": 0,

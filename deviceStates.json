@@ -32,12 +32,26 @@
   },
   "531eb2b9466036286f93ce1baddeb44022862b5b64e8e14ce29c26b1671268a1": {
     "deviceId": "531eb2b9466036286f93ce1baddeb44022862b5b64e8e14ce29c26b1671268a1",
+    "enabled": true,
     "monitorVolume": 1,
+    "monitor2Volume": 1,
     "outputVolume": 1,
     "monitorMute": false,
-    "outputMute": true,
+    "monitor2Mute": false,
+    "outputMute": false,
     "forceMono": false,
-    "enabled": true,
     "label": "CABLE-A Output (VB-Audio Virtual Cable A)"
+  },
+  "560b13509cc9fa2a6056f7d474b3231696f293a1b8350cc178ffc11916619539": {
+    "deviceId": "560b13509cc9fa2a6056f7d474b3231696f293a1b8350cc178ffc11916619539",
+    "enabled": true,
+    "monitorVolume": 1,
+    "monitor2Volume": 1,
+    "outputVolume": 1,
+    "monitorMute": true,
+    "monitor2Mute": true,
+    "outputMute": false,
+    "forceMono": false,
+    "label": "Analogue 1 + 2 (Focusrite USB Audio)"
   }
 }

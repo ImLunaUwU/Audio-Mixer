@@ -8,13 +8,15 @@ const isDev = !app.isPackaged;
 const BASE_DIR = isDev ? __dirname : app.getPath("userData");
 const configPath = path.join(BASE_DIR, "config.json");
 const deviceStatePath = path.join(BASE_DIR, "deviceStates.json");
-const CONFIG_VERSION = 2;
+const CONFIG_VERSION = 3;
 
 const defaultInput = () => ({
   deviceId: "",
   monitorVolume: 1,
+  monitor2Volume: 1,
   outputVolume: 1,
   monitorMute: false,
+  monitor2Mute: false,
   outputMute: false,
   forceMono: false
 });
@@ -23,9 +25,12 @@ const DEFAULT_CONFIG = {
   version: CONFIG_VERSION,
   inputs: [defaultInput(), defaultInput(), defaultInput()],
   showMultichannelDevices: false,
+  enforceRoutingSafety: true,
   monitorDeviceId: null,
+  monitor2DeviceId: null,
   mixedOutputDeviceId: null,
   monitorMasterVolume: 1,
+  monitor2MasterVolume: 1,
   outputMasterVolume: 1,
   eq: {
     low: 0,
@@ -52,14 +57,60 @@ function readJsonSafe(filePath, fallbackValue) {
 }
 
 function migrateConfig(rawConfig = {}) {
+  const normalizeVolume = (value, fallback = 1) => Number.isFinite(value) ? value : fallback;
+  const normalizeInput = rawInput => {
+    const input = { ...defaultInput(), ...(rawInput || {}) };
+    const monitorVolume = normalizeVolume(input.monitorVolume, 1);
+    return {
+      deviceId: typeof input.deviceId === "string" ? input.deviceId : "",
+      monitorVolume,
+      monitor2Volume: normalizeVolume(input.monitor2Volume, monitorVolume),
+      outputVolume: normalizeVolume(input.outputVolume, 1),
+      monitorMute: !!input.monitorMute,
+      monitor2Mute: typeof input.monitor2Mute === "boolean" ? input.monitor2Mute : !!input.monitorMute,
+      outputMute: !!input.outputMute,
+      forceMono: !!input.forceMono
+    };
+  };
+
+  const normalizeSnapshot = rawSnapshot => {
+    const snapshot = rawSnapshot && typeof rawSnapshot === "object" ? rawSnapshot : {};
+    const inputs = Array.isArray(snapshot.inputs)
+      ? [0, 1, 2].map(index => normalizeInput(snapshot.inputs[index]))
+      : [defaultInput(), defaultInput(), defaultInput()];
+    const monitorMasterVolume = Number.isFinite(snapshot.monitorMasterVolume) ? snapshot.monitorMasterVolume : 1;
+    return {
+      ...snapshot,
+      inputs,
+      monitorDeviceId: typeof snapshot.monitorDeviceId === "string" ? snapshot.monitorDeviceId : "",
+      monitor2DeviceId: typeof snapshot.monitor2DeviceId === "string" ? snapshot.monitor2DeviceId : "",
+      mixedOutputDeviceId: typeof snapshot.mixedOutputDeviceId === "string" ? snapshot.mixedOutputDeviceId : "",
+      monitorMasterVolume,
+      monitor2MasterVolume: Number.isFinite(snapshot.monitor2MasterVolume) ? snapshot.monitor2MasterVolume : monitorMasterVolume,
+      outputMasterVolume: Number.isFinite(snapshot.outputMasterVolume) ? snapshot.outputMasterVolume : 1,
+      overloadGain: Number.isFinite(snapshot.overloadGain) ? snapshot.overloadGain : 1,
+      eq: {
+        low: Number.isFinite(snapshot?.eq?.low) ? snapshot.eq.low : 0,
+        mid: Number.isFinite(snapshot?.eq?.mid) ? snapshot.eq.mid : 0,
+        high: Number.isFinite(snapshot?.eq?.high) ? snapshot.eq.high : 0
+      }
+    };
+  };
+
   const merged = {
     ...DEFAULT_CONFIG,
     ...rawConfig
   };
+  const inputVersion = Number.isFinite(rawConfig?.version) ? rawConfig.version : 0;
 
   merged.version = CONFIG_VERSION;
   merged.monitorMasterVolume = Number.isFinite(merged.monitorMasterVolume) ? merged.monitorMasterVolume : 1;
+  merged.monitor2MasterVolume = Number.isFinite(merged.monitor2MasterVolume) ? merged.monitor2MasterVolume : merged.monitorMasterVolume;
   merged.outputMasterVolume = Number.isFinite(merged.outputMasterVolume) ? merged.outputMasterVolume : 1;
+  merged.enforceRoutingSafety = typeof merged.enforceRoutingSafety === "boolean" ? merged.enforceRoutingSafety : true;
+  merged.monitorDeviceId = typeof merged.monitorDeviceId === "string" ? merged.monitorDeviceId : "";
+  merged.monitor2DeviceId = typeof merged.monitor2DeviceId === "string" ? merged.monitor2DeviceId : "";
+  merged.mixedOutputDeviceId = typeof merged.mixedOutputDeviceId === "string" ? merged.mixedOutputDeviceId : "";
   const legacyBass = Number.isFinite(merged.bassGain) ? merged.bassGain : 0;
   const rawEq = merged.eq && typeof merged.eq === "object" ? merged.eq : {};
   merged.eq = {
@@ -72,23 +123,24 @@ function migrateConfig(rawConfig = {}) {
     ? merged.eqCustomPresets.filter(item => item && typeof item.name === "string" && item.values)
     : [];
 
-  merged.presets = Array.isArray(merged.presets)
-    ? merged.presets.filter(item => item && typeof item.name === "string" && item.snapshot)
-    : [];
+  if (Array.isArray(merged.presets)) {
+    const validPresets = merged.presets.filter(item => item && typeof item.name === "string" && item.snapshot);
+    merged.presets = inputVersion >= 3
+      ? validPresets.map(item => ({
+          name: item.name,
+          snapshot: item.snapshot
+        }))
+      : validPresets.map(item => ({
+          name: item.name,
+          snapshot: normalizeSnapshot(item.snapshot)
+        }));
+  } else {
+    merged.presets = [];
+  }
   merged.overloadGain = Number.isFinite(merged.overloadGain) ? merged.overloadGain : 1;
 
   const existingInputs = Array.isArray(rawConfig.inputs) ? rawConfig.inputs : [];
-  merged.inputs = [0, 1, 2].map(index => {
-    const input = { ...defaultInput(), ...(existingInputs[index] || {}) };
-    return {
-      deviceId: input.deviceId,
-      monitorVolume: input.monitorVolume,
-      outputVolume: input.outputVolume,
-      monitorMute: !!input.monitorMute,
-      outputMute: !!input.outputMute,
-      forceMono: !!input.forceMono
-    };
-  });
+  merged.inputs = [0, 1, 2].map(index => normalizeInput(existingInputs[index]));
 
   delete merged.bassGain;
   delete merged.autoGainEnabled;
@@ -195,7 +247,11 @@ ipcMain.handle("config:load", () => {
   const loaded = readJsonSafe(configPath, DEFAULT_CONFIG);
   const migrated = migrateConfig(loaded);
   configCache = migrated;
-  writeConfig(migrated);
+  const loadedString = JSON.stringify(loaded);
+  const migratedString = JSON.stringify(migrated);
+  if (loadedString !== migratedString) {
+    fs.writeFileSync(configPath, `${migratedString}\n`);
+  }
   return migrated;
 });
 

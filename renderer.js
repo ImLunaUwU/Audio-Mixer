@@ -1,4 +1,4 @@
-const CONFIG_VERSION = 2;
+const CONFIG_VERSION = 3;
 const METER_FLOOR_DB = -41;
 
 let config = {
@@ -6,9 +6,12 @@ let config = {
   inputs: [],
   compactMode: false,
   showMultichannelDevices: false,
+  enforceRoutingSafety: true,
   monitorDeviceId: null,
+  monitor2DeviceId: null,
   mixedOutputDeviceId: null,
   monitorMasterVolume: 1,
+  monitor2MasterVolume: 1,
   outputMasterVolume: 1,
   eq: { low: 0, mid: 0, high: 0 },
   eqCustomPresets: [],
@@ -39,13 +42,17 @@ const recoveryDebounceMap = {};
 const historicalDeviceLabels = {};
 const inputChannelCountCache = {};
 const outputChannelCountCache = {};
+let cachedInputDevices = [];
+let cachedOutputDevices = [];
 
 const ui = {
   inputSels: [],
   monitorSel: null,
+  monitor2Sel: null,
   mixedSel: null,
   sources: null,
   monitorMasterSlider: null,
+  monitor2MasterSlider: null,
   outputMasterSlider: null,
   eqLowSlider: null,
   eqMidSlider: null,
@@ -65,18 +72,23 @@ const ui = {
   presetLoad: null,
   presetDelete: null,
   monitorMasterDisplay: null,
+  monitor2MasterDisplay: null,
   outputMasterDisplay: null,
   monitorMeterFill: null,
+  monitor2MeterFill: null,
   outputMeterFill: null,
   monitorMeterText: null,
+  monitor2MeterText: null,
   outputMeterText: null,
   monitorClip: null,
+  monitor2Clip: null,
   outputClip: null,
   statusText: null,
   saveStateText: null,
   compactModeToggle: null,
   startOnBootToggle: null,
   showMultichannelDevicesToggle: null,
+  enforceRoutingSafetyToggle: null,
   toastContainer: null
 };
 
@@ -84,36 +96,57 @@ let sourceCardRefs = [null, null, null];
 
 const gainMap = {
   monitorMaster: null,
+  monitor2Master: null,
   outputMaster: null,
   eqLowMonitor: null,
   eqMidMonitor: null,
   eqHighMonitor: null,
+  eqLowMonitor2: null,
+  eqMidMonitor2: null,
+  eqHighMonitor2: null,
   eqLowOutput: null,
   eqMidOutput: null,
   eqHighOutput: null,
   overloadMonitor: null,
+  overloadMonitor2: null,
   overloadOutput: null,
   limiterMonitor: null,
+  limiterMonitor2: null,
   limiterOutput: null,
   perInput: []
 };
 
 const audioGraph = {
   monitorOut: null,
+  monitor2Out: null,
   mixedOut: null,
   eqInputMonitor: null,
+  eqInputMonitor2: null,
   eqInputOutput: null,
   monitorAudio: null,
+  monitor2Audio: null,
   mixedAudio: null,
+  monitorOutputCtx: null,
+  monitor2OutputCtx: null,
+  mixedOutputCtx: null,
+  monitorOutputSource: null,
+  monitor2OutputSource: null,
+  mixedOutputSource: null,
+  monitorOutputGain: null,
+  monitor2OutputGain: null,
+  mixedOutputGain: null,
   monitorMeterAnalyser: null,
+  monitor2MeterAnalyser: null,
   outputMeterAnalyser: null,
   monitorMeterBuffer: null,
+  monitor2MeterBuffer: null,
   outputMeterBuffer: null,
   inputRoutes: [null, null, null]
 };
 
 const clipHoldUntil = {
   monitor: 0,
+  monitor2: 0,
   output: 0,
   inputs: [0, 0, 0]
 };
@@ -131,21 +164,35 @@ function getDefaultInputConfig(deviceId = "") {
     deviceId,
     enabled: true,
     monitorVolume: 1,
+    monitor2Volume: 1,
     outputVolume: 1,
     monitorMute: false,
+    monitor2Mute: false,
     outputMute: false,
     forceMono: false
   };
 }
 
 function getInputConfig(index) {
-  if (!config.inputs[index]) {
+  if (!config.inputs[index] || typeof config.inputs[index] !== "object") {
     config.inputs[index] = getDefaultInputConfig();
   }
-  return config.inputs[index];
+
+  const input = config.inputs[index];
+  const monitorVolume = Number.isFinite(input.monitorVolume) ? input.monitorVolume : 1;
+  input.deviceId = typeof input.deviceId === "string" ? input.deviceId : "";
+  input.enabled = input.enabled !== false;
+  input.monitorVolume = monitorVolume;
+  input.monitor2Volume = Number.isFinite(input.monitor2Volume) ? input.monitor2Volume : monitorVolume;
+  input.outputVolume = Number.isFinite(input.outputVolume) ? input.outputVolume : 1;
+  input.monitorMute = !!input.monitorMute;
+  input.monitor2Mute = typeof input.monitor2Mute === "boolean" ? input.monitor2Mute : !!input.monitorMute;
+  input.outputMute = !!input.outputMute;
+  input.forceMono = !!input.forceMono;
+  return input;
 }
 
-async function getInputDeviceChannelCount(deviceId) {
+async function getInputDeviceChannelCount(deviceId, { allowProbe = true } = {}) {
   if (!deviceId) return 2;
   if (Number.isFinite(inputChannelCountCache[deviceId])) return inputChannelCountCache[deviceId];
 
@@ -158,6 +205,8 @@ async function getInputDeviceChannelCount(deviceId) {
       return liveCount;
     }
   }
+
+  if (!allowProbe) return 2;
 
   try {
     const probeStream = await navigator.mediaDevices.getUserMedia({
@@ -298,6 +347,7 @@ function teardownRoute(index) {
   disconnectNode(route.monoMerger);
   disconnectNode(route.inputAnalyser);
   disconnectNode(route.monitorGain);
+  disconnectNode(route.monitor2Gain);
   disconnectNode(route.outputGain);
 
   audioGraph.inputRoutes[index] = null;
@@ -345,9 +395,11 @@ function initialiseUiRefs() {
     document.getElementById("input3")
   ];
   ui.monitorSel = document.getElementById("monitorDevice");
+  ui.monitor2Sel = document.getElementById("monitor2Device");
   ui.mixedSel = document.getElementById("mixedOutputDevice");
   ui.sources = document.getElementById("sources");
   ui.monitorMasterSlider = document.getElementById("monitorMaster");
+  ui.monitor2MasterSlider = document.getElementById("monitor2Master");
   ui.outputMasterSlider = document.getElementById("outputMaster");
   ui.eqLowSlider = document.getElementById("eqLowControl");
   ui.eqMidSlider = document.getElementById("eqMidControl");
@@ -367,29 +419,36 @@ function initialiseUiRefs() {
   ui.presetLoad = document.getElementById("presetLoad");
   ui.presetDelete = document.getElementById("presetDelete");
   ui.monitorMasterDisplay = document.getElementById("monitorMasterDisplay");
+  ui.monitor2MasterDisplay = document.getElementById("monitor2MasterDisplay");
   ui.outputMasterDisplay = document.getElementById("outputMasterDisplay");
   ui.monitorMeterFill = document.getElementById("monitorMeterFill");
+  ui.monitor2MeterFill = document.getElementById("monitor2MeterFill");
   ui.outputMeterFill = document.getElementById("outputMeterFill");
   ui.monitorMeterText = document.getElementById("monitorMeterText");
+  ui.monitor2MeterText = document.getElementById("monitor2MeterText");
   ui.outputMeterText = document.getElementById("outputMeterText");
   ui.monitorClip = document.getElementById("monitorClip");
+  ui.monitor2Clip = document.getElementById("monitor2Clip");
   ui.outputClip = document.getElementById("outputClip");
   ui.statusText = document.getElementById("statusText");
   ui.saveStateText = document.getElementById("saveStateText");
   ui.compactModeToggle = document.getElementById("compactModeToggle");
   ui.startOnBootToggle = document.getElementById("startOnBootToggle");
   ui.showMultichannelDevicesToggle = document.getElementById("showMultichannelDevices");
+  ui.enforceRoutingSafetyToggle = document.getElementById("enforceRoutingSafetyToggle");
   ui.toastContainer = document.getElementById("toastContainer");
 }
 
 function applyUiFromConfig() {
   ui.monitorMasterSlider.value = config.monitorMasterVolume;
+  ui.monitor2MasterSlider.value = config.monitor2MasterVolume;
   ui.outputMasterSlider.value = config.outputMasterVolume;
   ui.eqLowSlider.value = config.eq.low;
   ui.eqMidSlider.value = config.eq.mid;
   ui.eqHighSlider.value = config.eq.high;
   ui.overloadSlider.value = config.overloadGain;
   ui.monitorMasterDisplay.textContent = `${Math.round(config.monitorMasterVolume * 100)}%`;
+  ui.monitor2MasterDisplay.textContent = `${Math.round(config.monitor2MasterVolume * 100)}%`;
   ui.outputMasterDisplay.textContent = `${Math.round(config.outputMasterVolume * 100)}%`;
   ui.eqLowDisplay.textContent = `${parseFloat(config.eq.low).toFixed(1)} dB`;
   ui.eqMidDisplay.textContent = `${parseFloat(config.eq.mid).toFixed(1)} dB`;
@@ -399,14 +458,19 @@ function applyUiFromConfig() {
   if (ui.showMultichannelDevicesToggle) {
     ui.showMultichannelDevicesToggle.checked = !!config.showMultichannelDevices;
   }
+  if (ui.enforceRoutingSafetyToggle) {
+    ui.enforceRoutingSafetyToggle.checked = config.enforceRoutingSafety !== false;
+  }
 }
 
 function getPresetSnapshot() {
   return {
     inputs: config.inputs.map(input => ({ ...input })),
     monitorDeviceId: config.monitorDeviceId,
+    monitor2DeviceId: config.monitor2DeviceId,
     mixedOutputDeviceId: config.mixedOutputDeviceId,
     monitorMasterVolume: config.monitorMasterVolume,
+    monitor2MasterVolume: config.monitor2MasterVolume,
     outputMasterVolume: config.outputMasterVolume,
     eq: { ...config.eq },
     overloadGain: config.overloadGain,
@@ -471,11 +535,26 @@ async function applyPresetByName(name) {
 
   const snapshot = preset.snapshot;
   config.inputs = Array.isArray(snapshot.inputs)
-    ? snapshot.inputs.map(input => ({ ...getDefaultInputConfig(), ...input }))
+    ? snapshot.inputs.map(input => {
+      const normalized = { ...getDefaultInputConfig(), ...input };
+      const monitorVolume = Number.isFinite(normalized.monitorVolume) ? normalized.monitorVolume : 1;
+      return {
+        ...normalized,
+        monitorVolume,
+        monitor2Volume: Number.isFinite(normalized.monitor2Volume) ? normalized.monitor2Volume : monitorVolume,
+        monitorMute: !!normalized.monitorMute,
+        monitor2Mute: typeof normalized.monitor2Mute === "boolean" ? normalized.monitor2Mute : !!normalized.monitorMute,
+        outputMute: !!normalized.outputMute,
+        forceMono: !!normalized.forceMono,
+        enabled: normalized.enabled !== false
+      };
+    })
     : [getDefaultInputConfig(), getDefaultInputConfig(), getDefaultInputConfig()];
   config.monitorDeviceId = snapshot.monitorDeviceId || "";
+  config.monitor2DeviceId = snapshot.monitor2DeviceId || "";
   config.mixedOutputDeviceId = snapshot.mixedOutputDeviceId || "";
   config.monitorMasterVolume = Number.isFinite(snapshot.monitorMasterVolume) ? snapshot.monitorMasterVolume : 1;
+  config.monitor2MasterVolume = Number.isFinite(snapshot.monitor2MasterVolume) ? snapshot.monitor2MasterVolume : config.monitorMasterVolume;
   config.outputMasterVolume = Number.isFinite(snapshot.outputMasterVolume) ? snapshot.outputMasterVolume : 1;
   config.eq = {
     low: Number.isFinite(snapshot?.eq?.low) ? snapshot.eq.low : 0,
@@ -489,7 +568,11 @@ async function applyPresetByName(name) {
     ui.inputSels[i].value = getInputConfig(i).deviceId || "";
   }
   ui.monitorSel.value = config.monitorDeviceId || "";
+  ui.monitor2Sel.value = config.monitor2DeviceId || "";
   ui.mixedSel.value = config.mixedOutputDeviceId || "";
+
+  enforceRoutingSelectionRules({ notify: false });
+  syncRoutingConfigFromSelectors();
 
   saveConfig();
   await queueBuildAudioGraph();
@@ -499,14 +582,19 @@ async function applyPresetByName(name) {
 
 function applyMasterAudioParams() {
   if (gainMap.monitorMaster) rampGain(gainMap.monitorMaster, config.monitorMasterVolume);
+  if (gainMap.monitor2Master) rampGain(gainMap.monitor2Master, config.monitor2MasterVolume);
   if (gainMap.outputMaster) rampGain(gainMap.outputMaster, config.outputMasterVolume);
   if (gainMap.eqLowMonitor) gainMap.eqLowMonitor.gain.value = config.eq.low;
   if (gainMap.eqMidMonitor) gainMap.eqMidMonitor.gain.value = config.eq.mid;
   if (gainMap.eqHighMonitor) gainMap.eqHighMonitor.gain.value = config.eq.high;
+  if (gainMap.eqLowMonitor2) gainMap.eqLowMonitor2.gain.value = config.eq.low;
+  if (gainMap.eqMidMonitor2) gainMap.eqMidMonitor2.gain.value = config.eq.mid;
+  if (gainMap.eqHighMonitor2) gainMap.eqHighMonitor2.gain.value = config.eq.high;
   if (gainMap.eqLowOutput) gainMap.eqLowOutput.gain.value = config.eq.low;
   if (gainMap.eqMidOutput) gainMap.eqMidOutput.gain.value = config.eq.mid;
   if (gainMap.eqHighOutput) gainMap.eqHighOutput.gain.value = config.eq.high;
   if (gainMap.overloadMonitor) rampGain(gainMap.overloadMonitor, config.overloadGain, 0.03);
+  if (gainMap.overloadMonitor2) rampGain(gainMap.overloadMonitor2, config.overloadGain, 0.03);
   if (gainMap.overloadOutput) rampGain(gainMap.overloadOutput, config.overloadGain, 0.03);
 }
 
@@ -536,6 +624,9 @@ async function getOrCreateStream(deviceId) {
     audio: {
       deviceId: { exact: deviceId },
       channelCount: 2,
+      sampleRate: { ideal: 48000 },
+      sampleSize: { ideal: 16 },
+      latency: { ideal: 0.005, max: 0.02 },
       echoCancellation: false,
       noiseSuppression: false,
       autoGainControl: false
@@ -549,21 +640,28 @@ async function getOrCreateStream(deviceId) {
 
 async function ensureAudioEngine() {
   if (!audioCtx) {
-    audioCtx = new AudioContext();
+    audioCtx = new AudioContext({ latencyHint: "interactive" });
     audioGraph.monitorOut = audioCtx.createMediaStreamDestination();
+    audioGraph.monitor2Out = audioCtx.createMediaStreamDestination();
     audioGraph.mixedOut = audioCtx.createMediaStreamDestination();
 
     gainMap.monitorMaster = audioCtx.createGain();
+    gainMap.monitor2Master = audioCtx.createGain();
     gainMap.outputMaster = audioCtx.createGain();
     gainMap.eqLowMonitor = audioCtx.createBiquadFilter();
     gainMap.eqMidMonitor = audioCtx.createBiquadFilter();
     gainMap.eqHighMonitor = audioCtx.createBiquadFilter();
+    gainMap.eqLowMonitor2 = audioCtx.createBiquadFilter();
+    gainMap.eqMidMonitor2 = audioCtx.createBiquadFilter();
+    gainMap.eqHighMonitor2 = audioCtx.createBiquadFilter();
     gainMap.eqLowOutput = audioCtx.createBiquadFilter();
     gainMap.eqMidOutput = audioCtx.createBiquadFilter();
     gainMap.eqHighOutput = audioCtx.createBiquadFilter();
     gainMap.overloadMonitor = audioCtx.createGain();
+    gainMap.overloadMonitor2 = audioCtx.createGain();
     gainMap.overloadOutput = audioCtx.createGain();
     gainMap.limiterMonitor = audioCtx.createDynamicsCompressor();
+    gainMap.limiterMonitor2 = audioCtx.createDynamicsCompressor();
     gainMap.limiterOutput = audioCtx.createDynamicsCompressor();
 
     gainMap.eqLowMonitor.type = "lowshelf";
@@ -574,6 +672,14 @@ async function ensureAudioEngine() {
     gainMap.eqHighMonitor.type = "highshelf";
     gainMap.eqHighMonitor.frequency.value = 5600;
 
+    gainMap.eqLowMonitor2.type = "lowshelf";
+    gainMap.eqLowMonitor2.frequency.value = 180;
+    gainMap.eqMidMonitor2.type = "peaking";
+    gainMap.eqMidMonitor2.frequency.value = 1400;
+    gainMap.eqMidMonitor2.Q.value = 0.9;
+    gainMap.eqHighMonitor2.type = "highshelf";
+    gainMap.eqHighMonitor2.frequency.value = 5600;
+
     gainMap.eqLowOutput.type = "lowshelf";
     gainMap.eqLowOutput.frequency.value = 180;
     gainMap.eqMidOutput.type = "peaking";
@@ -583,39 +689,38 @@ async function ensureAudioEngine() {
     gainMap.eqHighOutput.frequency.value = 5600;
 
     configureLimiter(gainMap.limiterMonitor);
+    configureLimiter(gainMap.limiterMonitor2);
     configureLimiter(gainMap.limiterOutput);
 
     audioGraph.monitorMeterAnalyser = audioCtx.createAnalyser();
+    audioGraph.monitor2MeterAnalyser = audioCtx.createAnalyser();
     audioGraph.outputMeterAnalyser = audioCtx.createAnalyser();
-    audioGraph.monitorMeterAnalyser.fftSize = 1024;
-    audioGraph.outputMeterAnalyser.fftSize = 1024;
+    audioGraph.monitorMeterAnalyser.fftSize = 256;
+    audioGraph.monitor2MeterAnalyser.fftSize = 256;
+    audioGraph.outputMeterAnalyser.fftSize = 256;
     audioGraph.monitorMeterBuffer = new Uint8Array(audioGraph.monitorMeterAnalyser.fftSize);
+    audioGraph.monitor2MeterBuffer = new Uint8Array(audioGraph.monitor2MeterAnalyser.fftSize);
     audioGraph.outputMeterBuffer = new Uint8Array(audioGraph.outputMeterAnalyser.fftSize);
 
-    gainMap.eqLowMonitor
-      .connect(gainMap.eqMidMonitor)
-      .connect(gainMap.eqHighMonitor)
-      .connect(gainMap.overloadMonitor)
-      .connect(gainMap.limiterMonitor)
-      .connect(gainMap.monitorMaster)
-      .connect(audioGraph.monitorOut);
+    gainMap.monitorMaster.connect(audioGraph.monitorOut);
+    gainMap.monitor2Master.connect(audioGraph.monitor2Out);
 
-    gainMap.eqLowOutput
-      .connect(gainMap.eqMidOutput)
-      .connect(gainMap.eqHighOutput)
-      .connect(gainMap.overloadOutput)
-      .connect(gainMap.limiterOutput)
-      .connect(gainMap.outputMaster)
-      .connect(audioGraph.mixedOut);
+    gainMap.outputMaster.connect(audioGraph.mixedOut);
     gainMap.monitorMaster.connect(audioGraph.monitorMeterAnalyser);
+    gainMap.monitor2Master.connect(audioGraph.monitor2MeterAnalyser);
     gainMap.outputMaster.connect(audioGraph.outputMeterAnalyser);
 
-    audioGraph.eqInputMonitor = gainMap.eqLowMonitor;
-    audioGraph.eqInputOutput = gainMap.eqLowOutput;
+    audioGraph.eqInputMonitor = gainMap.monitorMaster;
+    audioGraph.eqInputMonitor2 = gainMap.monitor2Master;
+    audioGraph.eqInputOutput = gainMap.outputMaster;
 
     audioGraph.monitorAudio = new Audio();
     audioGraph.monitorAudio.srcObject = audioGraph.monitorOut.stream;
     audioGraph.monitorAudio.autoplay = true;
+
+    audioGraph.monitor2Audio = new Audio();
+    audioGraph.monitor2Audio.srcObject = audioGraph.monitor2Out.stream;
+    audioGraph.monitor2Audio.autoplay = true;
 
     audioGraph.mixedAudio = new Audio();
     audioGraph.mixedAudio.srcObject = audioGraph.mixedOut.stream;
@@ -631,20 +736,112 @@ async function ensureAudioEngine() {
   }
 }
 
+async function ensureOutputBridge(contextKey, sourceKey, gainKey, stream) {
+  if (!audioGraph[contextKey]) {
+    audioGraph[contextKey] = new AudioContext({ latencyHint: "interactive" });
+  }
+
+  const outputCtx = audioGraph[contextKey];
+  if (outputCtx.state === "suspended") {
+    try {
+      await outputCtx.resume();
+    } catch (_) {}
+  }
+
+  if (!audioGraph[sourceKey] || !audioGraph[gainKey]) {
+    const source = outputCtx.createMediaStreamSource(stream);
+    const gain = outputCtx.createGain();
+    source.connect(gain).connect(outputCtx.destination);
+    audioGraph[sourceKey] = source;
+    audioGraph[gainKey] = gain;
+  }
+}
+
+async function applySinkToOutputBridge(contextKey, gainKey, deviceId) {
+  const outputCtx = audioGraph[contextKey];
+  const outputGain = audioGraph[gainKey];
+  if (!outputCtx || !outputGain) return false;
+
+  if (typeof outputCtx.setSinkId !== "function") {
+    outputGain.gain.value = deviceId ? 1 : 0;
+    return false;
+  }
+
+  try {
+    if (deviceId) {
+      await outputCtx.setSinkId(deviceId);
+      outputGain.gain.value = 1;
+    } else {
+      outputGain.gain.value = 0;
+    }
+    return true;
+  } catch (_) {
+    outputGain.gain.value = 0;
+    return false;
+  }
+}
+
 async function applyOutputSinkIds() {
-  if (!audioGraph.monitorAudio || !audioGraph.mixedAudio) return;
+  if (!audioGraph.monitorAudio || !audioGraph.monitor2Audio || !audioGraph.mixedAudio) return;
+  applyAllInputRouteGains();
+
+  await ensureOutputBridge("monitorOutputCtx", "monitorOutputSource", "monitorOutputGain", audioGraph.monitorOut.stream);
+  await ensureOutputBridge("monitor2OutputCtx", "monitor2OutputSource", "monitor2OutputGain", audioGraph.monitor2Out.stream);
+  await ensureOutputBridge("mixedOutputCtx", "mixedOutputSource", "mixedOutputGain", audioGraph.mixedOut.stream);
+
+  const monitorBridgeApplied = await applySinkToOutputBridge("monitorOutputCtx", "monitorOutputGain", config.monitorDeviceId || "");
+  const monitor2BridgeApplied = await applySinkToOutputBridge("monitor2OutputCtx", "monitor2OutputGain", config.monitor2DeviceId || "");
+  const mixedBridgeApplied = await applySinkToOutputBridge("mixedOutputCtx", "mixedOutputGain", config.mixedOutputDeviceId || "");
 
   if (typeof audioGraph.monitorAudio.setSinkId === "function") {
     try {
-      await audioGraph.monitorAudio.setSinkId(config.monitorDeviceId || "default");
+      if (monitorBridgeApplied) {
+        audioGraph.monitorAudio.volume = 0;
+      } else if (config.monitorDeviceId) {
+        audioGraph.monitorAudio.volume = 1;
+        await audioGraph.monitorAudio.setSinkId(config.monitorDeviceId);
+        if (audioGraph.monitorAudio.paused) {
+          await audioGraph.monitorAudio.play().catch(() => {});
+        }
+      } else {
+        audioGraph.monitorAudio.volume = 0;
+      }
     } catch (error) {
       reportError("Monitor sink change", error, "Could not switch monitor output device.");
     }
   }
 
+  if (typeof audioGraph.monitor2Audio.setSinkId === "function") {
+    try {
+      if (monitor2BridgeApplied) {
+        audioGraph.monitor2Audio.volume = 0;
+      } else if (config.monitor2DeviceId) {
+        audioGraph.monitor2Audio.volume = 1;
+        await audioGraph.monitor2Audio.setSinkId(config.monitor2DeviceId);
+        if (audioGraph.monitor2Audio.paused) {
+          await audioGraph.monitor2Audio.play().catch(() => {});
+        }
+      } else {
+        audioGraph.monitor2Audio.volume = 0;
+      }
+    } catch (error) {
+      reportError("Monitor 2 sink change", error, "Could not switch monitor 2 output device.");
+    }
+  }
+
   if (typeof audioGraph.mixedAudio.setSinkId === "function") {
     try {
-      await audioGraph.mixedAudio.setSinkId(config.mixedOutputDeviceId || "default");
+      if (mixedBridgeApplied) {
+        audioGraph.mixedAudio.volume = 0;
+      } else if (config.mixedOutputDeviceId) {
+        audioGraph.mixedAudio.volume = 1;
+        await audioGraph.mixedAudio.setSinkId(config.mixedOutputDeviceId);
+        if (audioGraph.mixedAudio.paused) {
+          await audioGraph.mixedAudio.play().catch(() => {});
+        }
+      } else {
+        audioGraph.mixedAudio.volume = 0;
+      }
     } catch (error) {
       reportError("Mixed sink change", error, "Could not switch mixed output device.");
     }
@@ -655,10 +852,18 @@ function applyInputRouteGains(index) {
   const inputCfg = getInputConfig(index);
   const route = audioGraph.inputRoutes[index];
   if (!route) return;
-  const monitorTarget = inputCfg.monitorMute ? 0 : inputCfg.monitorVolume;
-  const outputTarget = inputCfg.outputMute ? 0 : inputCfg.outputVolume;
-  rampGain(route.monitorGain, monitorTarget);
-  rampGain(route.outputGain, outputTarget);
+  const monitorTarget = (config.monitorDeviceId && !inputCfg.monitorMute) ? inputCfg.monitorVolume : 0;
+  const monitor2Target = (config.monitor2DeviceId && !inputCfg.monitor2Mute) ? inputCfg.monitor2Volume : 0;
+  const outputTarget = (config.mixedOutputDeviceId && !inputCfg.outputMute) ? inputCfg.outputVolume : 0;
+  if (route.monitorGain) rampGain(route.monitorGain, monitorTarget);
+  if (route.monitor2Gain) rampGain(route.monitor2Gain, monitor2Target);
+  if (route.outputGain) rampGain(route.outputGain, outputTarget);
+}
+
+function applyAllInputRouteGains() {
+  for (let i = 0; i < 3; i++) {
+    if (audioGraph.inputRoutes[i]) applyInputRouteGains(i);
+  }
 }
 
 async function rebuildInputRoute(index) {
@@ -679,9 +884,10 @@ async function rebuildInputRoute(index) {
 
   const source = audioCtx.createMediaStreamSource(stream);
   const monitorGain = audioCtx.createGain();
+  const monitor2Gain = audioCtx.createGain();
   const outputGain = audioCtx.createGain();
   const inputAnalyser = audioCtx.createAnalyser();
-  inputAnalyser.fftSize = 1024;
+  inputAnalyser.fftSize = 256;
 
   let monoSplitter = null;
   let monoMerger = null;
@@ -696,21 +902,31 @@ async function rebuildInputRoute(index) {
     routedNode = monoMerger;
   }
 
+  const monitorBusActive = !!config.monitorDeviceId;
+  const monitor2BusActive = !!config.monitor2DeviceId;
+  const outputBusActive = !!config.mixedOutputDeviceId;
+
   routedNode.connect(inputAnalyser);
-  routedNode.connect(monitorGain).connect(audioGraph.eqInputMonitor);
-  routedNode.connect(outputGain).connect(audioGraph.eqInputOutput);
+  if (monitorBusActive) routedNode.connect(monitorGain).connect(audioGraph.eqInputMonitor);
+  if (monitor2BusActive) routedNode.connect(monitor2Gain).connect(audioGraph.eqInputMonitor2);
+  if (outputBusActive) routedNode.connect(outputGain).connect(audioGraph.eqInputOutput);
 
   audioGraph.inputRoutes[index] = {
     source,
     monoSplitter,
     monoMerger,
-    monitorGain,
-    outputGain,
+    monitorGain: monitorBusActive ? monitorGain : null,
+    monitor2Gain: monitor2BusActive ? monitor2Gain : null,
+    outputGain: outputBusActive ? outputGain : null,
     inputAnalyser,
     meterBuffer: new Uint8Array(inputAnalyser.fftSize)
   };
 
-  gainMap.perInput[index] = { monitorGain, outputGain };
+  gainMap.perInput[index] = {
+    monitorGain: monitorBusActive ? monitorGain : null,
+    monitor2Gain: monitor2BusActive ? monitor2Gain : null,
+    outputGain: outputBusActive ? outputGain : null
+  };
   applyInputRouteGains(index);
 }
 
@@ -766,10 +982,13 @@ function updateClipIndicator(element, db, bucket, inputIndex = -1) {
 
 function updateMeters() {
   const monitorDb = audioGraph.monitorMeterBuffer ? getAnalyserDb(audioGraph.monitorMeterAnalyser, audioGraph.monitorMeterBuffer) : METER_FLOOR_DB;
+  const monitor2Db = audioGraph.monitor2MeterBuffer ? getAnalyserDb(audioGraph.monitor2MeterAnalyser, audioGraph.monitor2MeterBuffer) : METER_FLOOR_DB;
   const outputDb = audioGraph.outputMeterBuffer ? getAnalyserDb(audioGraph.outputMeterAnalyser, audioGraph.outputMeterBuffer) : METER_FLOOR_DB;
   updateMeterVisual(ui.monitorMeterFill, ui.monitorMeterText, monitorDb);
+  updateMeterVisual(ui.monitor2MeterFill, ui.monitor2MeterText, monitor2Db);
   updateMeterVisual(ui.outputMeterFill, ui.outputMeterText, outputDb);
   updateClipIndicator(ui.monitorClip, monitorDb, "monitor");
+  updateClipIndicator(ui.monitor2Clip, monitor2Db, "monitor2");
   updateClipIndicator(ui.outputClip, outputDb, "output");
 
   for (let i = 0; i < 3; i++) {
@@ -811,6 +1030,11 @@ function renderSourceCard(index) {
       <span class="monitorVolDisplay">${Math.round(inputCfg.monitorVolume * 100)}%</span>
     </label>
     <label><input type="checkbox" class="monitorMute" ${inputCfg.monitorMute ? "checked" : ""}> Mute Monitor</label><br>
+    <label>Monitor 2 Volume:
+      <input type="range" min="0" max="1" step="0.01" value="${inputCfg.monitor2Volume}" class="monitor2Vol">
+      <span class="monitor2VolDisplay">${Math.round(inputCfg.monitor2Volume * 100)}%</span>
+    </label>
+    <label><input type="checkbox" class="monitor2Mute" ${inputCfg.monitor2Mute ? "checked" : ""}> Mute Monitor 2</label><br>
     <label>Output Volume:
       <input type="range" min="0" max="1" step="0.01" value="${inputCfg.outputVolume}" class="outputVol">
       <span class="outputVolDisplay">${Math.round(inputCfg.outputVolume * 100)}%</span>
@@ -822,8 +1046,10 @@ function renderSourceCard(index) {
 
   const inputEnabled = card.querySelector(".inputEnabled");
   const monVol = card.querySelector(".monitorVol");
+  const mon2Vol = card.querySelector(".monitor2Vol");
   const outVol = card.querySelector(".outputVol");
   const monMute = card.querySelector(".monitorMute");
+  const mon2Mute = card.querySelector(".monitor2Mute");
   const outMute = card.querySelector(".outputMute");
   const monoBox = card.querySelector(".forceMono");
   const inputMeterFill = card.querySelector(".inputMeterFill");
@@ -853,6 +1079,14 @@ function renderSourceCard(index) {
     saveConfig();
   };
 
+  mon2Vol.oninput = () => {
+    inputCfg.monitor2Volume = parseFloat(mon2Vol.value);
+    mon2Vol.nextElementSibling.textContent = `${Math.round(inputCfg.monitor2Volume * 100)}%`;
+    applyInputRouteGains(index);
+    saveInputStateByIndex(index);
+    saveConfig();
+  };
+
   outVol.oninput = () => {
     inputCfg.outputVolume = parseFloat(outVol.value);
     outVol.nextElementSibling.textContent = `${Math.round(inputCfg.outputVolume * 100)}%`;
@@ -863,6 +1097,13 @@ function renderSourceCard(index) {
 
   monMute.onchange = () => {
     inputCfg.monitorMute = monMute.checked;
+    applyInputRouteGains(index);
+    saveInputStateByIndex(index);
+    saveConfig();
+  };
+
+  mon2Mute.onchange = () => {
+    inputCfg.monitor2Mute = mon2Mute.checked;
     applyInputRouteGains(index);
     saveInputStateByIndex(index);
     saveConfig();
@@ -933,10 +1174,182 @@ function makeOptions(select, devices, emptyLabel) {
     const option = document.createElement("option");
     option.value = device.deviceId;
     option.textContent = device.label || `Unnamed ${device.kind === "audioinput" ? "Input" : "Output"}`;
+    option.dataset.baseLabel = option.textContent;
     select.appendChild(option);
   });
 
   select.value = currentValue;
+}
+
+function getAllRoutingSelects() {
+  return [...ui.inputSels, ui.monitorSel, ui.monitor2Sel, ui.mixedSel].filter(Boolean);
+}
+
+function getOptionBaseLabel(option) {
+  if (!option.dataset.baseLabel) option.dataset.baseLabel = option.textContent || "";
+  return option.dataset.baseLabel;
+}
+
+function clearOptionDisabledReason(option) {
+  if (!option) return;
+  const baseLabel = getOptionBaseLabel(option);
+  option.dataset.disabledReason = "";
+  option.textContent = baseLabel;
+  option.title = "";
+  option.disabled = false;
+}
+
+function setOptionDisabledReason(option, reason) {
+  if (!option || !option.value || !reason) return;
+  const baseLabel = getOptionBaseLabel(option);
+  option.dataset.disabledReason = reason;
+  option.textContent = `${baseLabel} — ${reason}`;
+  option.title = reason;
+  option.disabled = true;
+}
+
+function resetRoutingOptionStates() {
+  getAllRoutingSelects().forEach(select => {
+    Array.from(select.options).forEach(option => {
+      if (!option.value) {
+        option.disabled = false;
+        option.title = "";
+        option.dataset.disabledReason = "";
+        return;
+      }
+      clearOptionDisabledReason(option);
+    });
+  });
+}
+
+function getCableDescriptor(label = "") {
+  const normalized = String(label || "").toLowerCase();
+  if (!normalized.includes("cable")) return null;
+  const match = normalized.match(/cable(?:\s*[-_]\s*([a-z0-9]+)|\s+([a-z0-9]+))?\s*(input|output)\b/);
+  if (!match) return null;
+  const variant = (match[1] || match[2] || "").trim();
+  const side = match[3];
+  if (!side) return null;
+  return {
+    familyKey: `cable:${variant || "default"}`,
+    side
+  };
+}
+
+function getOppositeCableSide(side) {
+  return side === "input" ? "output" : side === "output" ? "input" : "";
+}
+
+function getSelectedCableEntries(selects, devicesById) {
+  const entries = [];
+  selects.forEach(select => {
+    const deviceId = select?.value || "";
+    if (!deviceId) return;
+    const device = devicesById.get(deviceId);
+    if (!device) return;
+    const descriptor = getCableDescriptor(device.label || "");
+    if (!descriptor) return;
+    entries.push({
+      ...descriptor,
+      label: device.label || "Cable device"
+    });
+  });
+  return entries;
+}
+
+function applyCableLoopRestrictions({ notify = false } = {}) {
+  const inputsById = new Map(cachedInputDevices.map(device => [device.deviceId, device]));
+  const outputsById = new Map(cachedOutputDevices.map(device => [device.deviceId, device]));
+  const selectedInputEntries = getSelectedCableEntries(ui.inputSels, inputsById);
+  const outputSelects = [ui.monitorSel, ui.monitor2Sel, ui.mixedSel].filter(Boolean);
+  const selectedOutputEntries = getSelectedCableEntries(outputSelects, outputsById);
+  const toastReasonsShown = new Set();
+
+  const blockConflictingOptions = (selects, deviceMap, opposingEntries, sideContextLabel) => {
+    selects.forEach(select => {
+      Array.from(select.options).forEach(option => {
+        if (!option.value) return;
+        const device = deviceMap.get(option.value);
+        if (!device) return;
+        const descriptor = getCableDescriptor(device.label || "");
+        if (!descriptor) return;
+
+        const conflict = opposingEntries.find(entry => {
+          return entry.familyKey === descriptor.familyKey && entry.side === getOppositeCableSide(descriptor.side);
+        });
+        if (!conflict) return;
+
+        const reason = `Disabled to prevent cable loop with ${conflict.label}`;
+        setOptionDisabledReason(option, reason);
+
+        if (select.value === option.value) {
+          select.value = "";
+          if (notify && !toastReasonsShown.has(reason)) {
+            toastReasonsShown.add(reason);
+            showToast(`${sideContextLabel}: ${reason}.`, "error", 4200);
+          }
+        }
+      });
+    });
+  };
+
+  blockConflictingOptions(outputSelects, outputsById, selectedInputEntries, "Output routing changed");
+  blockConflictingOptions(ui.inputSels, inputsById, selectedOutputEntries, "Input routing changed");
+}
+
+function enforceUniqueSelectionGroup(selects, duplicateReason) {
+  if (!Array.isArray(selects) || !selects.length) return;
+
+  const seen = new Set();
+  selects.forEach(select => {
+    const value = select?.value || "";
+    if (!value) return;
+    if (seen.has(value)) {
+      select.value = "";
+      return;
+    }
+    seen.add(value);
+  });
+
+  selects.forEach((select, index) => {
+    if (!select) return;
+    const selectedElsewhere = new Set(
+      selects
+        .filter((other, otherIndex) => other && otherIndex !== index)
+        .map(other => other.value)
+        .filter(Boolean)
+    );
+
+    Array.from(select.options).forEach(option => {
+      if (!option.value) return;
+      if (selectedElsewhere.has(option.value)) {
+        if (!option.dataset.disabledReason) {
+          setOptionDisabledReason(option, duplicateReason);
+        }
+        return;
+      }
+      if (!option.dataset.disabledReason) {
+        clearOptionDisabledReason(option);
+      }
+    });
+  });
+}
+
+function enforceRoutingSelectionRules({ notify = false } = {}) {
+  resetRoutingOptionStates();
+  if (config.enforceRoutingSafety === false) return;
+  applyCableLoopRestrictions({ notify });
+  enforceUniqueSelectionGroup(ui.inputSels, "Already selected on another input");
+  enforceUniqueSelectionGroup([ui.monitorSel, ui.monitor2Sel, ui.mixedSel], "Already selected on another output");
+}
+
+function syncRoutingConfigFromSelectors() {
+  for (let i = 0; i < 3; i++) {
+    getInputConfig(i).deviceId = ui.inputSels[i].value || "";
+  }
+  config.monitorDeviceId = ui.monitorSel.value || "";
+  config.monitor2DeviceId = ui.monitor2Sel.value || "";
+  config.mixedOutputDeviceId = ui.mixedSel.value || "";
 }
 
 function findInputReplacement(oldDeviceId, inputs, usedIds) {
@@ -961,10 +1374,19 @@ async function refreshDeviceLists({ rebindMissing = true, notify = false } = {})
   setStatus("Refreshing devices...");
   const devices = await navigator.mediaDevices.enumerateDevices();
   const allInputs = devices.filter(d => d.kind === "audioinput" && !isReservedDeviceId(d.deviceId));
-  const inputCounts = await Promise.all(allInputs.map(device => getInputDeviceChannelCount(device.deviceId)));
+  const selectedInputIds = new Set([0, 1, 2].map(index => getInputConfig(index).deviceId).filter(Boolean));
+  const inputCounts = await Promise.all(allInputs.map(async device => {
+    const inferred = inferChannelsFromLabel(device.label);
+    if (config.showMultichannelDevices) return inferred;
+    if (inferred <= 2) return inferred;
+    if (!selectedInputIds.has(device.deviceId)) return inferred;
+    return getInputDeviceChannelCount(device.deviceId, { allowProbe: true });
+  }));
   const inputs = allInputs.filter((_, idx) => config.showMultichannelDevices || inputCounts[idx] <= 2);
   const allOutputs = devices.filter(d => d.kind === "audiooutput" && !isReservedDeviceId(d.deviceId));
   const outputs = allOutputs.filter(device => config.showMultichannelDevices || getOutputDeviceChannelCount(device) <= 2);
+  cachedInputDevices = inputs;
+  cachedOutputDevices = outputs;
 
   inputs.forEach(device => {
     historicalDeviceLabels[device.deviceId] = device.label || "Unnamed Input";
@@ -974,8 +1396,9 @@ async function refreshDeviceLists({ rebindMissing = true, notify = false } = {})
   });
 
   ui.inputSels.forEach(select => makeOptions(select, inputs, "(None)"));
-  makeOptions(ui.monitorSel, outputs, "(Default)");
-  makeOptions(ui.mixedSel, outputs, "(Default)");
+  makeOptions(ui.monitorSel, outputs, "(None)");
+  makeOptions(ui.monitor2Sel, outputs, "(None)");
+  makeOptions(ui.mixedSel, outputs, "(None)");
 
   const validInputIds = new Set(inputs.map(d => d.deviceId));
   const usedInputIds = new Set();
@@ -1021,12 +1444,19 @@ async function refreshDeviceLists({ rebindMissing = true, notify = false } = {})
 
   const validOutputIds = new Set(outputs.map(d => d.deviceId));
   if (isReservedDeviceId(config.monitorDeviceId)) config.monitorDeviceId = "";
+  if (isReservedDeviceId(config.monitor2DeviceId)) config.monitor2DeviceId = "";
   if (isReservedDeviceId(config.mixedOutputDeviceId)) config.mixedOutputDeviceId = "";
 
   if (config.monitorDeviceId && !validOutputIds.has(config.monitorDeviceId)) {
     const replacement = rebindMissing ? findOutputReplacement(config.monitorDeviceId, outputs) : "";
     config.monitorDeviceId = replacement || "";
     if (notify) showToast("Monitor output changed due to device update.", replacement ? "success" : "error");
+  }
+
+  if (config.monitor2DeviceId && !validOutputIds.has(config.monitor2DeviceId)) {
+    const replacement = rebindMissing ? findOutputReplacement(config.monitor2DeviceId, outputs) : "";
+    config.monitor2DeviceId = replacement || "";
+    if (notify) showToast("Monitor 2 output changed due to device update.", replacement ? "success" : "error");
   }
 
   if (config.mixedOutputDeviceId && !validOutputIds.has(config.mixedOutputDeviceId)) {
@@ -1039,7 +1469,11 @@ async function refreshDeviceLists({ rebindMissing = true, notify = false } = {})
     ui.inputSels[i].value = getInputConfig(i).deviceId || "";
   }
   ui.monitorSel.value = config.monitorDeviceId || "";
+  ui.monitor2Sel.value = config.monitor2DeviceId || "";
   ui.mixedSel.value = config.mixedOutputDeviceId || "";
+
+  enforceRoutingSelectionRules({ notify: false });
+  syncRoutingConfigFromSelectors();
 
   window.deviceStateAPI.saveState(deviceStates);
   saveConfig();
@@ -1154,6 +1588,8 @@ async function setupDevControls() {
 
 function setupUiHandlers() {
   const onSelectionChange = debounce(async () => {
+    enforceRoutingSelectionRules({ notify: true });
+
     const changedInputIndexes = [];
 
     for (let i = 0; i < 3; i++) {
@@ -1168,9 +1604,14 @@ function setupUiHandlers() {
     }
 
     const monitorChanged = config.monitorDeviceId !== ui.monitorSel.value;
+    const monitor2Changed = config.monitor2DeviceId !== ui.monitor2Sel.value;
     const mixedChanged = config.mixedOutputDeviceId !== ui.mixedSel.value;
     config.monitorDeviceId = ui.monitorSel.value;
+    config.monitor2DeviceId = ui.monitor2Sel.value;
     config.mixedOutputDeviceId = ui.mixedSel.value;
+
+    enforceRoutingSelectionRules({ notify: true });
+    syncRoutingConfigFromSelectors();
 
     saveConfig();
 
@@ -1178,8 +1619,8 @@ function setupUiHandlers() {
       await queueRebuildInputRoute(index, true);
     }
 
-    if (monitorChanged || mixedChanged) {
-      await applyOutputSinkIds();
+    if (monitorChanged || monitor2Changed || mixedChanged) {
+      await queueBuildAudioGraph();
     }
 
     setStatus("Routing updated");
@@ -1189,6 +1630,7 @@ function setupUiHandlers() {
     select.onchange = onSelectionChange;
   });
   ui.monitorSel.onchange = onSelectionChange;
+  ui.monitor2Sel.onchange = onSelectionChange;
   ui.mixedSel.onchange = onSelectionChange;
 
   if (ui.compactModeToggle) {
@@ -1211,6 +1653,36 @@ function setupUiHandlers() {
     };
   }
 
+  if (ui.enforceRoutingSafetyToggle) {
+    ui.enforceRoutingSafetyToggle.onchange = async () => {
+      const previousInputIds = [0, 1, 2].map(index => getInputConfig(index).deviceId || "");
+      const previousOutputs = {
+        monitorDeviceId: config.monitorDeviceId || "",
+        monitor2DeviceId: config.monitor2DeviceId || "",
+        mixedOutputDeviceId: config.mixedOutputDeviceId || ""
+      };
+
+      config.enforceRoutingSafety = ui.enforceRoutingSafetyToggle.checked;
+      enforceRoutingSelectionRules({ notify: config.enforceRoutingSafety });
+      syncRoutingConfigFromSelectors();
+      saveConfig();
+
+      const changedInputIndexes = [0, 1, 2].filter(index => previousInputIds[index] !== getInputConfig(index).deviceId);
+      for (const index of changedInputIndexes) {
+        await queueRebuildInputRoute(index, true);
+      }
+
+      const outputChanged = previousOutputs.monitorDeviceId !== config.monitorDeviceId
+        || previousOutputs.monitor2DeviceId !== config.monitor2DeviceId
+        || previousOutputs.mixedOutputDeviceId !== config.mixedOutputDeviceId;
+      if (outputChanged) {
+        await applyOutputSinkIds();
+      }
+
+      setStatus(config.enforceRoutingSafety ? "Routing safety restrictions enabled" : "Routing safety restrictions bypassed");
+    };
+  }
+
   if (ui.startOnBootToggle && window.appAPI && typeof window.appAPI.setStartOnBoot === "function") {
     ui.startOnBootToggle.onchange = async () => {
       try {
@@ -1226,6 +1698,13 @@ function setupUiHandlers() {
   ui.monitorMasterSlider.oninput = () => {
     config.monitorMasterVolume = parseFloat(ui.monitorMasterSlider.value);
     ui.monitorMasterDisplay.textContent = `${Math.round(config.monitorMasterVolume * 100)}%`;
+    applyMasterAudioParams();
+    saveConfig();
+  };
+
+  ui.monitor2MasterSlider.oninput = () => {
+    config.monitor2MasterVolume = parseFloat(ui.monitor2MasterSlider.value);
+    ui.monitor2MasterDisplay.textContent = `${Math.round(config.monitor2MasterVolume * 100)}%`;
     applyMasterAudioParams();
     saveConfig();
   };
@@ -1384,8 +1863,17 @@ async function setup() {
       ...config,
       ...loadedConfig,
       version: CONFIG_VERSION,
+      monitorDeviceId: typeof loadedConfig?.monitorDeviceId === "string" ? loadedConfig.monitorDeviceId : "",
+      monitor2DeviceId: typeof loadedConfig?.monitor2DeviceId === "string" ? loadedConfig.monitor2DeviceId : "",
+      mixedOutputDeviceId: typeof loadedConfig?.mixedOutputDeviceId === "string" ? loadedConfig.mixedOutputDeviceId : "",
+      monitorMasterVolume: Number.isFinite(loadedConfig?.monitorMasterVolume) ? loadedConfig.monitorMasterVolume : 1,
+      monitor2MasterVolume: Number.isFinite(loadedConfig?.monitor2MasterVolume)
+        ? loadedConfig.monitor2MasterVolume
+        : (Number.isFinite(loadedConfig?.monitorMasterVolume) ? loadedConfig.monitorMasterVolume : 1),
+      outputMasterVolume: Number.isFinite(loadedConfig?.outputMasterVolume) ? loadedConfig.outputMasterVolume : 1,
       compactMode: !!loadedConfig?.compactMode,
       showMultichannelDevices: !!loadedConfig?.showMultichannelDevices,
+      enforceRoutingSafety: typeof loadedConfig?.enforceRoutingSafety === "boolean" ? loadedConfig.enforceRoutingSafety : true,
       eq: {
         low: Number.isFinite(loadedConfig?.eq?.low) ? loadedConfig.eq.low : (Number.isFinite(loadedConfig?.bassGain) ? loadedConfig.bassGain : 0),
         mid: Number.isFinite(loadedConfig?.eq?.mid) ? loadedConfig.eq.mid : 0,
@@ -1393,6 +1881,22 @@ async function setup() {
       },
       eqCustomPresets: Array.isArray(loadedConfig.eqCustomPresets) ? loadedConfig.eqCustomPresets : [],
       presets: Array.isArray(loadedConfig.presets) ? loadedConfig.presets : [],
+      inputs: Array.isArray(loadedConfig?.inputs)
+        ? loadedConfig.inputs.map(input => {
+          const normalized = { ...getDefaultInputConfig(), ...(input || {}) };
+          const monitorVolume = Number.isFinite(normalized.monitorVolume) ? normalized.monitorVolume : 1;
+          return {
+            ...normalized,
+            monitorVolume,
+            monitor2Volume: Number.isFinite(normalized.monitor2Volume) ? normalized.monitor2Volume : monitorVolume,
+            monitorMute: !!normalized.monitorMute,
+            monitor2Mute: typeof normalized.monitor2Mute === "boolean" ? normalized.monitor2Mute : !!normalized.monitorMute,
+            outputMute: !!normalized.outputMute,
+            forceMono: !!normalized.forceMono,
+            enabled: normalized.enabled !== false
+          };
+        })
+        : [getDefaultInputConfig(), getDefaultInputConfig(), getDefaultInputConfig()],
     };
 
     deviceStates = await window.deviceStateAPI.loadState();
