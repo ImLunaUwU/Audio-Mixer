@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' blob:; worker-src 'self' blob:; style-src 'self'; img-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Luna's Audio Mixer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>Audio Mixer</h1>
+        <span id="appVersion" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="status" role="status" aria-live="polite">
+      <span id="statusText" data-variant="idle">Loading…</span>
+      <span id="soloIndicator" class="solo-pill" hidden title="One or more inputs are soloed">SOLO</span>
+      <span id="saveState" class="muted" data-state="saved">Saved</span>
+    </div>
+
+    <div class="toolbar">
+      <div class="preset-group" title="Mix presets: Ctrl+S to save, Ctrl+1–9 to recall">
+        <select id="presetSelect" aria-label="Load preset"></select>
+        <button id="presetSave" type="button" class="ghost" title="Save the current mix as a preset (Ctrl+S)">Save</button>
+        <button id="presetDelete" type="button" class="ghost icon" title="Delete selected preset" aria-label="Delete preset">✕</button>
+      </div>
+      <button id="muteAllButton" type="button" class="ghost" title="Mute / unmute all outputs (Shift+M)">Mute all</button>
+      <button id="refreshButton" type="button" class="ghost icon" title="Refresh devices and applications (Ctrl+R)" aria-label="Refresh devices">⟳</button>
+      <button id="helpButton" type="button" class="ghost icon" title="Keyboard shortcuts (?)" aria-label="Help">?</button>
+      <button id="settingsButton" type="button" class="ghost icon" title="Settings (,)" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel">⚙</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="mixer" aria-label="Mixer">
+      <div class="section-label">Inputs</div>
+      <div id="inputStrips" class="strips"></div>
+      <div class="divider" aria-hidden="true"></div>
+      <div class="section-label">Outputs</div>
+      <div id="busStrips" class="strips buses"></div>
+    </section>
+
+    <aside id="settingsPanel" class="panel" hidden aria-label="Settings">
+      <header class="panel-header">
+        <h2>Settings</h2>
+        <button id="settingsClose" type="button" class="ghost icon" aria-label="Close settings" title="Close (Esc)">✕</button>
+      </header>
+
+      <section class="panel-section">
+        <h3>Master processing <span class="muted small">(all outputs)</span></h3>
+        <div class="eq-presets">
+          <select id="eqPreset" aria-label="EQ preset"></select>
+          <input id="eqPresetName" type="text" maxlength="40" placeholder="Preset name" aria-label="EQ preset name">
+          <button id="eqPresetSave" type="button" class="ghost">Save</button>
+          <button id="eqPresetDelete" type="button" class="ghost icon" aria-label="Delete EQ preset" title="Delete EQ preset">✕</button>
+        </div>
+        <label class="row" title="Low shelf at 180 Hz. Double-click to reset."><span>Low</span><input id="eqLow" type="range" min="-12" max="12" step="0.1" data-default="0"><output id="eqLowValue"></output></label>
+        <label class="row" title="Peaking band at 1.4 kHz. Double-click to reset."><span>Mid</span><input id="eqMid" type="range" min="-12" max="12" step="0.1" data-default="0"><output id="eqMidValue"></output></label>
+        <label class="row" title="High shelf at 5.6 kHz. Double-click to reset."><span>High</span><input id="eqHigh" type="range" min="-12" max="12" step="0.1" data-default="0"><output id="eqHighValue"></output></label>
+        <label class="row" title="Post-mix boost before the fader (replaces the old OVERLOAD control). Double-click to reset."><span>Drive</span><input id="drive" type="range" min="0" max="12" step="0.1" data-default="0"><output id="driveValue"></output></label>
+
+        <label class="check" title="Smoothly saturates peaks (tanh knee, 4x oversampled) instead of hard-cutting at 0 dBFS">
+          <input id="softClipEnabled" type="checkbox"> Soft clipping
+        </label>
+        <label class="row" title="Level where the soft knee starts. Lower values saturate earlier and sound warmer."><span>Knee</span><input id="softClipThreshold" type="range" min="-18" max="-0.5" step="0.5" data-default="-6"><output id="softClipThresholdValue"></output></label>
+
+        <label class="check" title="3 ms lookahead brickwall limiter after the soft clipper. Peaks never exceed the ceiling.">
+          <input id="limiterEnabled" type="checkbox"> Peak limiter
+        </label>
+        <label class="row" title="Maximum output peak level"><span>Ceiling</span><input id="limiterCeiling" type="range" min="-12" max="0" step="0.1" data-default="-1"><output id="limiterCeilingValue"></output></label>
+        <button id="resetMaster" type="button" class="ghost">Reset master processing</button>
+      </section>
+
+      <section class="panel-section">
+        <h3>Audio engine</h3>
+        <label class="row" title="Lower latency uses more CPU and may crackle on slow machines. Restarts the engine.">
+          <span>Latency</span>
+          <select id="latencyHint">
+            <option value="interactive">Lowest (interactive)</option>
+            <option value="balanced">Balanced</option>
+            <option value="playback">Safe (playback)</option>
+          </select>
+        </label>
+        <label class="check" title="Also list devices with more than 2 channels"><input id="showMultichannel" type="checkbox"> Show multichannel devices</label>
+        <label class="check" title="Prevent picking the same device twice and virtual-cable feedback loops"><input id="routingSafety" type="checkbox"> Routing safety (duplicate &amp; loop guard)</label>
+      </section>
+
+      <section class="panel-section">
+        <h3>Application</h3>
+        <label class="check"><input id="startOnBoot" type="checkbox"> Start with Windows (hidden in tray)</label>
+        <label class="check"><input id="closeToTray" type="checkbox"> Closing the window keeps running in the tray</label>
+        <label class="check"><input id="compactMode" type="checkbox"> Compact layout</label>
+      </section>
+    </aside>
+  </main>
+
+  <dialog id="helpDialog" aria-labelledby="helpTitle">
+    <form method="dialog">
+      <h2 id="helpTitle">Keyboard shortcuts</h2>
+      <div id="shortcutList" class="shortcuts"></div>
+      <p class="muted small">Faders: drag, scroll (Shift = coarse), arrow keys, double-click for 0 dB. Click a clip light to reset it.</p>
+      <div class="dialog-actions"><button value="close" class="primary">Close</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="presetDialog" aria-labelledby="presetDialogTitle">
+    <form method="dialog">
+      <h2 id="presetDialogTitle">Save preset</h2>
+      <input id="presetDialogName" type="text" maxlength="40" placeholder="Preset name" aria-label="Preset name" autocomplete="off">
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost">Cancel</button>
+        <button value="save" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
