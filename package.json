@@ -14,7 +14,7 @@
     "appId": "dev.imluna.audio-mixer",
     "productName": "Audio Mixer",
     "asar": {
-      "unpack": "**/*.json"
+      "unpack": "{**/*.json,**/application-loopback/bin/**}"
     },
     "files": [
       "**/*",
@@ -41,6 +41,7 @@
     "electron-winstaller": "^5.4.0"
   },
   "dependencies": {
+    "application-loopback": "^1.2.7",
     "electron-squirrel-startup": "^1.0.1"
   }
 }

@@ -89,7 +89,8 @@ const ui = {
   startOnBootToggle: null,
   showMultichannelDevicesToggle: null,
   enforceRoutingSafetyToggle: null,
-  toastContainer: null
+  toastContainer: null,
+  refreshAppSources: null
 };
 
 let sourceCardRefs = [null, null, null];
@@ -193,7 +194,7 @@ function getInputConfig(index) {
 }
 
 async function getInputDeviceChannelCount(deviceId, { allowProbe = true } = {}) {
-  if (!deviceId) return 2;
+  if (!deviceId || isAppSourceId(deviceId)) return 2;
   if (Number.isFinite(inputChannelCountCache[deviceId])) return inputChannelCountCache[deviceId];
 
   const existingStream = activeStreams[deviceId];
@@ -416,6 +417,7 @@ function initialiseUiRefs() {
   ui.presetSelect = document.getElementById("presetSelect");
   ui.presetName = document.getElementById("presetName");
   ui.presetSave = document.getElementById("presetSave");
+  ui.refreshAppSources = document.getElementById("refreshAppSources");
   ui.presetLoad = document.getElementById("presetLoad");
   ui.presetDelete = document.getElementById("presetDelete");
   ui.monitorMasterDisplay = document.getElementById("monitorMasterDisplay");
@@ -616,9 +618,202 @@ function bindStreamTrackRecovery(deviceId, stream) {
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// Per-application audio sources (Windows WASAPI process loopback)
+// ---------------------------------------------------------------------------
+// Application sources use deviceIds of the form "app:<pid>" so they flow through
+// the same routing/preset/device-state code as hardware inputs. Raw PCM
+// (s16le, 2ch, 48 kHz) arrives from the main process over IPC and is played into
+// the shared AudioContext by a small AudioWorklet, exposed as a MediaStream.
+const APP_SOURCE_PREFIX = "app:";
+const APP_PCM_SAMPLE_RATE = 48000;
+const APP_PCM_CHANNELS = 2;
+const appSources = {};
+let appAudioSupported = false;
+let appAudioUnsubscribe = null;
+let appWorkletContext = null;
+let cachedAppSources = [];
+
+const APP_WORKLET_SOURCE = `
+class AppPcmPlayer extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    const opts = options.processorOptions || {};
+    this.ratio = (opts.inputRate || 48000) / sampleRate;
+    this.capacity = Math.ceil((opts.inputRate || 48000) * 0.5);
+    this.maxFill = Math.ceil((opts.inputRate || 48000) * (opts.maxLatency || 0.12));
+    this.left = new Float32Array(this.capacity);
+    this.right = new Float32Array(this.capacity);
+    this.readPos = 0;
+    this.writePos = 0;
+    this.fill = 0;
+    this.port.onmessage = event => this.push(new Int16Array(event.data));
+  }
+  push(samples) {
+    const frames = samples.length >> 1;
+    for (let i = 0; i < frames; i++) {
+      this.left[this.writePos] = samples[i * 2] / 32768;
+      this.right[this.writePos] = samples[i * 2 + 1] / 32768;
+      this.writePos = (this.writePos + 1) % this.capacity;
+      if (this.fill < this.capacity) this.fill++;
+      else this.readPos = (this.readPos + 1) % this.capacity;
+    }
+    if (this.fill > this.maxFill) {
+      const drop = this.fill - Math.floor(this.maxFill / 2);
+      this.readPos = (this.readPos + drop) % this.capacity;
+      this.fill -= drop;
+    }
+  }
+  process(inputs, outputs) {
+    const out = outputs[0];
+    const outL = out[0];
+    const outR = out[1] || out[0];
+    for (let i = 0; i < outL.length; i++) {
+      if (this.fill < 2) {
+        outL[i] = 0;
+        outR[i] = 0;
+        continue;
+      }
+      const next = (this.readPos + 1) % this.capacity;
+      const frac = this.frac || 0;
+      outL[i] = this.left[this.readPos] + (this.left[next] - this.left[this.readPos]) * frac;
+      outR[i] = this.right[this.readPos] + (this.right[next] - this.right[this.readPos]) * frac;
+      let advance = frac + this.ratio;
+      const whole = Math.floor(advance);
+      this.frac = advance - whole;
+      this.readPos = (this.readPos + whole) % this.capacity;
+      this.fill = Math.max(0, this.fill - whole);
+    }
+    return true;
+  }
+}
+registerProcessor("app-pcm-player", AppPcmPlayer);
+`;
+
+function isAppSourceId(deviceId) {
+  return typeof deviceId === "string" && deviceId.startsWith(APP_SOURCE_PREFIX);
+}
+
+function getAppSourcePid(deviceId) {
+  return isAppSourceId(deviceId) ? deviceId.slice(APP_SOURCE_PREFIX.length) : "";
+}
+
+function ensureAppAudioListener() {
+  if (appAudioUnsubscribe || !window.appAudioAPI) return;
+  appAudioUnsubscribe = window.appAudioAPI.onData((pid, chunk) => {
+    const entry = appSources[pid];
+    if (!entry || !entry.node) return;
+    let bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+    if (entry.remainder && entry.remainder.length) {
+      const merged = new Uint8Array(entry.remainder.length + bytes.length);
+      merged.set(entry.remainder, 0);
+      merged.set(bytes, entry.remainder.length);
+      bytes = merged;
+    }
+    const frameBytes = APP_PCM_CHANNELS * 2;
+    const usable = bytes.length - (bytes.length % frameBytes);
+    entry.remainder = usable < bytes.length ? bytes.slice(usable) : null;
+    if (!usable) return;
+    const aligned = bytes.slice(0, usable).buffer;
+    entry.node.port.postMessage(aligned, [aligned]);
+  });
+}
+
+async function ensureAppWorklet() {
+  if (appWorkletContext === audioCtx) return;
+  const blobUrl = URL.createObjectURL(new Blob([APP_WORKLET_SOURCE], { type: "application/javascript" }));
+  try {
+    await audioCtx.audioWorklet.addModule(blobUrl);
+    appWorkletContext = audioCtx;
+  } finally {
+    URL.revokeObjectURL(blobUrl);
+  }
+}
+
+async function createAppSourceStream(deviceId) {
+  if (!appAudioSupported || !window.appAudioAPI) {
+    throw new Error("Per-application capture is not supported on this system.");
+  }
+  const pid = getAppSourcePid(deviceId);
+  if (!pid) throw new Error("Invalid application source.");
+
+  await ensureAudioEngine();
+  await ensureAppWorklet();
+  ensureAppAudioListener();
+  releaseAppSource(deviceId);
+
+  const node = new AudioWorkletNode(audioCtx, "app-pcm-player", {
+    numberOfInputs: 0,
+    numberOfOutputs: 1,
+    outputChannelCount: [APP_PCM_CHANNELS],
+    processorOptions: { inputRate: APP_PCM_SAMPLE_RATE, maxLatency: 0.12 }
+  });
+  const destination = audioCtx.createMediaStreamDestination();
+  destination.channelCount = APP_PCM_CHANNELS;
+  node.connect(destination);
+
+  appSources[pid] = { node, destination, remainder: null };
+  try {
+    await window.appAudioAPI.startCapture(pid);
+  } catch (error) {
+    releaseAppSource(deviceId);
+    throw error;
+  }
+  return destination.stream;
+}
+
+function releaseAppSource(deviceId) {
+  const pid = getAppSourcePid(deviceId);
+  const entry = pid ? appSources[pid] : null;
+  if (!entry) return;
+  delete appSources[pid];
+  try {
+    window.appAudioAPI?.stopCapture(pid);
+  } catch (_) {}
+  disconnectNode(entry.node);
+  entry.destination?.stream?.getTracks().forEach(track => track.stop());
+  if (activeStreams[deviceId] === entry.destination?.stream) delete activeStreams[deviceId];
+}
+
+function releaseUnusedAppSources() {
+  const inUse = new Set([0, 1, 2]
+    .map(index => getInputConfig(index))
+    .filter(cfg => cfg.enabled !== false && isAppSourceId(cfg.deviceId))
+    .map(cfg => cfg.deviceId));
+  Object.keys(appSources).forEach(pid => {
+    const deviceId = `${APP_SOURCE_PREFIX}${pid}`;
+    if (!inUse.has(deviceId)) releaseAppSource(deviceId);
+  });
+}
+
+async function listAppSources() {
+  if (!window.appAudioAPI) return [];
+  try {
+    appAudioSupported = !!(await window.appAudioAPI.isSupported());
+    if (!appAudioSupported) return [];
+    const apps = await window.appAudioAPI.listApps();
+    return (Array.isArray(apps) ? apps : []).map(app => ({
+      deviceId: `${APP_SOURCE_PREFIX}${app.pid}`,
+      kind: "appaudio",
+      label: `App: ${app.exeName || app.title || `PID ${app.pid}`}`,
+      title: app.title || ""
+    }));
+  } catch (error) {
+    console.warn("Failed to list application audio sources", error);
+    return [];
+  }
+}
+
 async function getOrCreateStream(deviceId) {
   const existing = activeStreams[deviceId];
   if (hasLiveTrack(existing)) return existing;
+
+  if (isAppSourceId(deviceId)) {
+    const appStream = await createAppSourceStream(deviceId);
+    activeStreams[deviceId] = appStream;
+    return appStream;
+  }
 
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
@@ -868,6 +1063,7 @@ function applyAllInputRouteGains() {
 
 async function rebuildInputRoute(index) {
   teardownRoute(index);
+  releaseUnusedAppSources();
 
   const inputCfg = getInputConfig(index);
   if (!inputCfg.deviceId || inputCfg.enabled === false) return;
@@ -1137,6 +1333,7 @@ async function buildAudioGraph() {
   for (let i = 0; i < 3; i++) {
     teardownRoute(i);
   }
+  releaseUnusedAppSources();
 
   renderSourceCards();
 
@@ -1170,11 +1367,22 @@ function makeOptions(select, devices, emptyLabel) {
   empty.textContent = emptyLabel;
   select.appendChild(empty);
 
+  let appGroup = null;
   devices.forEach(device => {
     const option = document.createElement("option");
     option.value = device.deviceId;
     option.textContent = device.label || `Unnamed ${device.kind === "audioinput" ? "Input" : "Output"}`;
     option.dataset.baseLabel = option.textContent;
+    if (device.kind === "appaudio") {
+      if (device.title) option.title = device.title;
+      if (!appGroup) {
+        appGroup = document.createElement("optgroup");
+        appGroup.label = "Applications";
+        select.appendChild(appGroup);
+      }
+      appGroup.appendChild(option);
+      return;
+    }
     select.appendChild(option);
   });
 
@@ -1382,7 +1590,11 @@ async function refreshDeviceLists({ rebindMissing = true, notify = false } = {})
     if (!selectedInputIds.has(device.deviceId)) return inferred;
     return getInputDeviceChannelCount(device.deviceId, { allowProbe: true });
   }));
-  const inputs = allInputs.filter((_, idx) => config.showMultichannelDevices || inputCounts[idx] <= 2);
+  cachedAppSources = await listAppSources();
+  const inputs = [
+    ...allInputs.filter((_, idx) => config.showMultichannelDevices || inputCounts[idx] <= 2),
+    ...cachedAppSources
+  ];
   const allOutputs = devices.filter(d => d.kind === "audiooutput" && !isReservedDeviceId(d.deviceId));
   const outputs = allOutputs.filter(device => config.showMultichannelDevices || getOutputDeviceChannelCount(device) <= 2);
   cachedInputDevices = inputs;
@@ -1629,6 +1841,21 @@ function setupUiHandlers() {
   ui.inputSels.forEach(select => {
     select.onchange = onSelectionChange;
   });
+
+  if (ui.refreshAppSources) {
+    ui.refreshAppSources.onclick = async () => {
+      try {
+        await refreshDeviceLists({ rebindMissing: true, notify: true });
+        if (!appAudioSupported) {
+          showToast("Per-application capture requires Windows 10 (2004+) x64.", "error");
+        } else {
+          setStatus(`Found ${cachedAppSources.length} application source(s)`);
+        }
+      } catch (error) {
+        reportError("Application refresh", error, "Failed to refresh application sources.");
+      }
+    };
+  }
   ui.monitorSel.onchange = onSelectionChange;
   ui.monitor2Sel.onchange = onSelectionChange;
   ui.mixedSel.onchange = onSelectionChange;

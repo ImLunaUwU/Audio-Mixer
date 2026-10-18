@@ -14,3 +14,15 @@ contextBridge.exposeInMainWorld("appAPI", {
   getStartOnBoot: () => ipcRenderer.invoke("app:getStartOnBoot"),
   setStartOnBoot: (enabled) => ipcRenderer.invoke("app:setStartOnBoot", !!enabled)
 });
+
+contextBridge.exposeInMainWorld("appAudioAPI", {
+  isSupported: () => ipcRenderer.invoke("appAudio:isSupported"),
+  listApps: () => ipcRenderer.invoke("appAudio:list"),
+  startCapture: (pid) => ipcRenderer.invoke("appAudio:start", String(pid)),
+  stopCapture: (pid) => ipcRenderer.send("appAudio:stop", String(pid)),
+  onData: (callback) => {
+    const listener = (event, pid, chunk) => callback(pid, chunk);
+    ipcRenderer.on("appAudio:data", listener);
+    return () => ipcRenderer.removeListener("appAudio:data", listener);
+  }
+});
