@@ -6,8 +6,15 @@
 //
 //  Bus (per output):
 //    input (sum) -> EQ low/mid/high -> drive -> fader -> soft clipper (optional)
-//           -> lookahead limiter (optional) -> meter tap + MediaStreamDestination
-//           -> output AudioContext with setSinkId(device)
+//           -> lookahead limiter (optional) -> meter tap
+//           -> output: the first active bus plays directly from the engine context
+//              (ctx.setSinkId), so its clock drives the whole graph; additional buses
+//              go through MediaStreamDestination -> their own AudioContext + setSinkId.
+//
+// Clock drift: every extra AudioContext runs on its own device clock. Keeping the
+// primary bus on the engine context removes one resampling hop and one clock domain
+// for the most common setup (one output); Chromium's MediaStream bridge absorbs the
+// drift for the others.
 //
 // Every parameter change goes through setTargetAtTime ramps to avoid zipper noise.
 
@@ -86,10 +93,13 @@ export class MixerEngine {
 
     input.connect(eqLow).connect(eqMid).connect(eqHigh).connect(drive).connect(fader)
       .connect(clipPre).connect(shaper).connect(limiter);
+    const direct = ctx.createGain();
+    direct.gain.value = 0;
     limiter.connect(meter.analyser);
     limiter.connect(destination);
+    limiter.connect(direct).connect(ctx.destination);
 
-    const bus = { id, input, eqLow, eqMid, eqHigh, drive, fader, clipPre, shaper, limiter, meter, destination, gainReductionDb: 0 };
+    const bus = { id, input, eqLow, eqMid, eqHigh, drive, fader, clipPre, shaper, limiter, meter, destination, direct, gainReductionDb: 0 };
     limiter.port.onmessage = event => {
       bus.gainReductionDb = event.data;
       if (this.onLimiterReduction) this.onLimiterReduction(id, event.data);
@@ -203,30 +213,54 @@ export class MixerEngine {
   }
 
   // ---------------------------------------------------------- output sinks
-  async setBusOutputDevice(id, deviceId) {
-    const bus = this.buses[id];
-    if (!bus) return false;
+  // deviceIds = { monitor: "id" | "", ... }. Returns { busId: Error } for failures.
+  async setOutputs(deviceIds) {
+    const errors = {};
+    const primary = BUS_IDS.find(id => deviceIds[id]) || null;
+    if (primary && this.ctxSinkId !== deviceIds[primary]) {
+      try {
+        await this.ctx.setSinkId(deviceIds[primary]);
+        this.ctxSinkId = deviceIds[primary];
+      } catch (error) {
+        errors[primary] = error;
+      }
+    }
+    for (const id of BUS_IDS) {
+      const bus = this.buses[id];
+      const isPrimary = id === primary && !errors[id];
+      bus.direct.gain.value = isPrimary ? 1 : 0;
+      try {
+        await this.setBridge(id, !isPrimary && deviceIds[id] ? deviceIds[id] : "");
+      } catch (error) {
+        errors[id] = error;
+      }
+    }
+    this.primaryBus = primary;
+    return errors;
+  }
+
+  async setBridge(id, deviceId) {
     let output = this.outputs[id];
     if (!deviceId) {
-      if (output) output.gain.gain.value = 0;
-      return true;
+      if (output) {
+        // close idle bridges: an unused AudioContext still burns a device clock
+        delete this.outputs[id];
+        await output.ctx.close().catch(() => {});
+      }
+      return;
     }
     if (!output) {
       const ctx = new this.AudioContextCtor({ latencyHint: this.latencyHint, sampleRate: SAMPLE_RATE });
-      const source = ctx.createMediaStreamSource(bus.destination.stream);
-      const gain = ctx.createGain();
-      source.connect(gain).connect(ctx.destination);
-      output = { ctx, source, gain, deviceId: null };
+      const source = ctx.createMediaStreamSource(this.buses[id].destination.stream);
+      source.connect(ctx.destination);
+      output = { ctx, source, deviceId: null };
       this.outputs[id] = output;
     }
     if (output.ctx.state === "suspended") await output.ctx.resume().catch(() => {});
     if (output.deviceId !== deviceId) {
-      if (typeof output.ctx.setSinkId !== "function") throw new Error("This Electron build cannot select output devices.");
       await output.ctx.setSinkId(deviceId);
       output.deviceId = deviceId;
     }
-    output.gain.gain.value = 1;
-    return true;
   }
 
   async close() {

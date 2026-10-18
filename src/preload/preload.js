@@ -9,6 +9,11 @@ const subscribe = (channel, callback) => {
   return () => ipcRenderer.removeListener(channel, listener);
 };
 
+// MessagePorts can't cross contextBridge; forward them to the page with window.postMessage.
+ipcRenderer.on("appAudio:port", (event, message) => {
+  window.postMessage({ type: "mixer:appAudioPort", pid: String(message?.pid ?? "") }, "*", event.ports);
+});
+
 contextBridge.exposeInMainWorld("mixerAPI", {
   config: {
     load: () => ipcRenderer.invoke("config:load"),
@@ -30,7 +35,6 @@ contextBridge.exposeInMainWorld("mixerAPI", {
     list: () => ipcRenderer.invoke("appAudio:list"),
     start: pid => ipcRenderer.invoke("appAudio:start", String(pid)),
     stop: pid => ipcRenderer.send("appAudio:stop", String(pid)),
-    onData: callback => subscribe("appAudio:data", callback),
     onEnded: callback => subscribe("appAudio:ended", callback)
   }
 });

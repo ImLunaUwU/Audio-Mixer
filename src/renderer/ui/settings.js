@@ -64,7 +64,7 @@ export function initSettings(ctl) {
     c().latencyHint = latency.value;
     ctl.save();
     await ctl.restartEngine();
-    toast(`Audio engine restarted (${latency.options[latency.selectedIndex].text}).`, "success");
+    toast(`Latency / Stability: ${latency.options[latency.selectedIndex].text}. Audio engine restarted.`, "success");
   });
   renders.push(() => { latency.value = c().latencyHint; });
 

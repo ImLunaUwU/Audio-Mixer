@@ -55,7 +55,7 @@ test("handles garbage and clamps values", () => {
   assert.equal(c.inputs.length, 3);
   assert.equal(c.driveDb, 12);
   assert.equal(c.limiter.ceilingDb, 0);
-  assert.equal(c.latencyHint, "interactive");
+  assert.equal(c.latencyHint, "balanced");
   assert.equal(c.window.width, 760);
   assert.deepEqual(migrateConfig(null).inputs, migrateConfig(undefined).inputs);
 });

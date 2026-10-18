@@ -122,11 +122,21 @@ test("master processing + bus params + sinks", async () => {
   engine.setBusParams("monitor", { volumeDb: 0, mute: true, active: true });
   assert.equal(bus.fader.gain.value, 0);
 
-  await engine.setBusOutputDevice("monitor", "headphones");
-  assert.equal(engine.outputs.monitor.ctx.sinkId, "headphones");
-  assert.equal(engine.outputs.monitor.source.stream, bus.destination.stream);
-  await engine.setBusOutputDevice("monitor", "");
-  assert.equal(engine.outputs.monitor.gain.gain.value, 0);
+  // first active bus plays straight from the engine context (one clock domain)
+  let errors = await engine.setOutputs({ monitor: "headphones", monitor2: "", output: "cable" });
+  assert.deepEqual(errors, {});
+  assert.equal(engine.ctx.sinkId, "headphones");
+  assert.equal(engine.buses.monitor.direct.gain.value, 1);
+  assert.equal(engine.outputs.monitor, undefined, "no bridge for the primary bus");
+  assert.equal(engine.buses.output.direct.gain.value, 0);
+  assert.equal(engine.outputs.output.ctx.sinkId, "cable");
+  assert.equal(engine.outputs.output.source.stream, engine.buses.output.destination.stream);
+  // turning the primary off promotes the next bus and closes the idle bridge
+  errors = await engine.setOutputs({ monitor: "", monitor2: "", output: "cable" });
+  assert.equal(engine.ctx.sinkId, "cable");
+  assert.equal(engine.buses.output.direct.gain.value, 1);
+  assert.equal(engine.buses.monitor.direct.gain.value, 0);
+  assert.equal(engine.outputs.output, undefined);
   await engine.close();
   assert.equal(engine.ctx, null);
 });

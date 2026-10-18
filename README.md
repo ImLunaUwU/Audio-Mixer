@@ -50,6 +50,25 @@ Output bus (×3)                                                                
 
 The engine runs at 48 kHz, the same rate as app capture, so app audio isn't resampled. Every parameter change is ramped to avoid zipper noise and clicks.
 
+## Stutter-free playback
+
+- **Adaptive jitter buffer for app capture.** It plays after about 40, 60 or 100 ms of audio is buffered, depending on the Latency / Stability profile.
+  - **Dropouts:** after a dropout, the target grows ×1.5, up to 400 ms. After 20 s without a dropout, it slowly shrinks back.
+  - **Clock drift** between the app's device and your output device is absorbed by nudging the playback rate (at most ±0.5 %, inaudible). Samples are never dropped or zero-filled.
+  - **Fades:** dropouts fade out and resume with a 5 ms fade-in.
+  - **Bursts after a stall** are skipped with a crossfade, so latency stays bounded.
+- **Audio goes straight to the audio thread.** PCM travels from the capture helper to the AudioWorklet over a dedicated `MessagePort`. It never waits behind UI work on the renderer thread. The audio callbacks don't allocate memory, which avoids garbage-collection hiccups.
+- **Fewer clock domains.** The first active output plays directly from the engine's AudioContext (`setSinkId`), and only the extra outputs use bridge contexts. Unused bridge contexts are closed. The window keeps full audio priority while minimized (`backgroundThrottling: false`).
+- **Latency / Stability setting** (Settings → Audio engine):
+
+| Profile | Web Audio latency hint | App-capture buffer |
+| --- | --- | --- |
+| Low latency | `interactive` | ~40 ms (min 25) |
+| Balanced (default) | `balanced` | ~60 ms (min 40) |
+| Stable | `playback` | ~100 ms (min 70) |
+
+Hover an app input's status light to see its live buffer level, dropout count and drift correction.
+
 ## Keyboard shortcuts
 
 | Keys | Action |
@@ -70,7 +89,7 @@ Faders also respond to the mouse wheel (Shift = coarse). Double-click a fader or
 
 ## Per-application capture
 
-Running apps with a visible window appear in each input's **Applications** group. Selecting one captures only that process tree, using `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` through the native helpers in [`application-loopback`](https://github.com/WerdoxDev/application-loopback). The main process streams 16-bit / 48 kHz stereo PCM to the renderer. There, an AudioWorklet feeds it straight into the strip, holding about 30 ms of buffer (at most 120 ms).
+Running apps with a visible window appear in each input's **Applications** group. Selecting one captures only that process tree, using `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` through the native helpers in [`application-loopback`](https://github.com/WerdoxDev/application-loopback). The main process streams 16-bit / 48 kHz stereo PCM to the renderer. There, an AudioWorklet feeds it straight into the strip, through an adaptive jitter buffer (see *Stutter-free playback*).
 
 - Requires **Windows 10 2004 (build 19041) or newer, x64**.
 - Capturing doesn't mute the app on its normal output device.
@@ -86,7 +105,7 @@ Running apps with a visible window appear in each input's **Applications** group
 ```sh
 npm install
 npm start            # run in development (settings are stored in the repo folder)
-npm test             # unit tests: config migration, DSP, limiter, PCM player, graph wiring
+npm test             # unit tests: config migration, DSP, limiter, jitter buffer, graph wiring
 npm run check        # syntax check of every source file
 npm run make         # build the Squirrel installer + zip into out/make
 ```
@@ -132,6 +151,6 @@ Settings live in `%APPDATA%/Audio Mixer/config.json` (`config.json` in the repo 
 
 - **No sound:** check that each output bus has a device selected (not *(Off)*), that the input's send buttons are lit, and that nothing is muted or soloed. A pulsing **SOLO** badge appears in the header when any input is soloed.
 - **An option is greyed out:** hover it. Routing safety blocks using the same device twice and virtual-cable loops. You can turn this off in Settings.
-- **Crackles:** set Settings → Audio engine → Latency to *Balanced* or *Safe*.
+- **Stutters or crackles:** set Settings → Audio engine → Latency / Stability to *Stable*. For app inputs, hover the status light to see whether dropouts are happening.
 - **An app isn't listed:** it needs a visible window. Click ⟳ (or press Ctrl+R) after starting it.
 - **SmartScreen warning on install:** the installer isn't code-signed. Choose *More info → Run anyway*.

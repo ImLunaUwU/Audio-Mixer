@@ -78,14 +78,15 @@
 
       <section class="panel-section">
         <h3>Audio engine</h3>
-        <label class="row" title="Lower latency uses more CPU and may crackle on slow machines. Restarts the engine.">
+        <label class="row" title="Trade latency for stability. Sets the Web Audio buffer size and the app-capture jitter buffer (which also grows automatically on dropouts). Restarts the engine.">
           <span>Latency</span>
-          <select id="latencyHint">
-            <option value="interactive">Lowest (interactive)</option>
-            <option value="balanced">Balanced</option>
-            <option value="playback">Safe (playback)</option>
+          <select id="latencyHint" aria-label="Latency / Stability">
+            <option value="interactive">Low latency (~40 ms apps)</option>
+            <option value="balanced">Balanced (~60 ms apps)</option>
+            <option value="playback">Stable (~100 ms apps)</option>
           </select>
         </label>
+        <p class="muted small">Latency / Stability: pick <b>Stable</b> if you hear stutters or crackles.</p>
         <label class="check" title="Also list devices with more than 2 channels"><input id="showMultichannel" type="checkbox"> Show multichannel devices</label>
         <label class="check" title="Prevent picking the same device twice and virtual-cable feedback loops"><input id="routingSafety" type="checkbox"> Routing safety (duplicate &amp; loop guard)</label>
       </section>

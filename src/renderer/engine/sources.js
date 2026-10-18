@@ -5,18 +5,25 @@ export const APP_PREFIX = "app:";
 export const isAppSource = id => typeof id === "string" && id.startsWith(APP_PREFIX);
 export const appPid = id => (isAppSource(id) ? id.slice(APP_PREFIX.length) : "");
 
-const FRAME_BYTES = 4; // s16le stereo
-
 export class SourceManager {
-  constructor({ ctxProvider, appAudio, onEnded }) {
+  constructor({ ctxProvider, appAudio, onEnded, onAppStats, getBufferSettings }) {
     this.ctxProvider = ctxProvider;
     this.appAudio = appAudio;
     this.onEnded = onEnded; // (sourceId, reason)
+    this.onAppStats = onAppStats; // (sourceId, stats)
+    this.getBufferSettings = getBufferSettings || (() => ({ targetMs: 60, minTargetMs: 30 }));
     this.devices = new Map(); // deviceId -> MediaStream
-    this.apps = new Map(); // pid -> { node, remainder }
+    this.apps = new Map(); // pid -> { node }
+    this.pendingPorts = new Map(); // pid -> MessagePort that arrived before the node
     this.unsubscribers = [];
+    // PCM MessagePorts from the main process are handed straight to the worklet.
+    const onPort = event => {
+      if (event.source !== window || event.data?.type !== "mixer:appAudioPort" || !event.ports[0]) return;
+      this.attachPort(event.data.pid, event.ports[0]);
+    };
+    window.addEventListener("message", onPort);
+    this.unsubscribers.push(() => window.removeEventListener("message", onPort));
     if (appAudio) {
-      this.unsubscribers.push(appAudio.onData((pid, chunk) => this.handleAppData(pid, chunk)));
       this.unsubscribers.push(appAudio.onEnded((pid, reason) => {
         if (!this.apps.has(pid)) return;
         this.releaseApp(pid, false);
@@ -68,10 +75,13 @@ export class SourceManager {
       numberOfInputs: 0,
       numberOfOutputs: 1,
       outputChannelCount: [2],
-      processorOptions: { inputRate: 48000, targetLatency: 0.03, maxLatency: 0.12 }
+      processorOptions: { inputRate: 48000, ...this.getBufferSettings() }
     });
-    const entry = { node, remainder: null };
+    node.port.onmessage = event => this.onAppStats?.(`${APP_PREFIX}${pid}`, event.data);
+    const entry = { node };
     this.apps.set(pid, entry);
+    const pending = this.pendingPorts.get(pid);
+    if (pending) { this.pendingPorts.delete(pid); this.attachPort(pid, pending); }
     try {
       await this.appAudio.start(pid);
     } catch (error) {
@@ -81,21 +91,20 @@ export class SourceManager {
     return node;
   }
 
-  handleAppData(pid, chunk) {
+  attachPort(pid, port) {
     const entry = this.apps.get(pid);
-    if (!entry) return;
-    let bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-    if (entry.remainder) {
-      const merged = new Uint8Array(entry.remainder.length + bytes.length);
-      merged.set(entry.remainder, 0);
-      merged.set(bytes, entry.remainder.length);
-      bytes = merged;
+    if (!entry) {
+      this.pendingPorts.get(pid)?.close();
+      this.pendingPorts.set(pid, port);
+      return;
     }
-    const usable = bytes.length - (bytes.length % FRAME_BYTES);
-    entry.remainder = usable < bytes.length ? bytes.slice(usable) : null;
-    if (!usable) return;
-    const buffer = bytes.slice(0, usable).buffer;
-    entry.node.port.postMessage(buffer, [buffer]);
+    entry.port?.close();
+    entry.port = port;
+    entry.node.port.postMessage({ type: "port", port }, [port]);
+  }
+
+  setBufferSettings(settings) {
+    this.apps.forEach(entry => entry.node.port.postMessage({ type: "config", ...settings }));
   }
 
   releaseApp(pid, stopHelper = true) {
@@ -106,6 +115,7 @@ export class SourceManager {
       try { this.appAudio?.stop(pid); } catch (_) {}
     }
     try { entry.node.disconnect(); } catch (_) {}
+    entry.node.port.onmessage = null;
     entry.node.port.close?.();
   }
 

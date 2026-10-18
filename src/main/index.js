@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, session, shell, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, session, shell, screen, MessageChannelMain } = require("electron");
 const path = require("path");
 const { version, productName } = require("../../package.json");
 const { migrateConfig, migrateDeviceStates } = require("./config");
@@ -210,10 +210,19 @@ function registerIpc() {
   handle("appAudio:start", (event, rawPid) => {
     const pid = String(rawPid ?? "");
     const sender = event.sender;
-    return appCapture.start(pid, sender.id, {
-      data: chunk => { if (!sender.isDestroyed()) sender.send("appAudio:data", pid, chunk); else appCapture.stop(pid); },
-      ended: reason => { if (!sender.isDestroyed()) sender.send("appAudio:ended", pid, reason); }
+    // PCM goes over a dedicated MessagePort that the renderer hands to the AudioWorklet,
+    // so audio never waits behind UI work on the renderer's main thread.
+    const { port1, port2 } = new MessageChannelMain();
+    const info = appCapture.start(pid, sender.id, {
+      data: chunk => port1.postMessage(chunk),
+      ended: reason => {
+        try { port1.close(); } catch (_) {}
+        if (!sender.isDestroyed()) sender.send("appAudio:ended", pid, reason);
+      }
     });
+    port1.start();
+    sender.postMessage("appAudio:port", { pid }, [port2]);
+    return info;
   });
   on("appAudio:stop", (_event, rawPid) => appCapture.stop(String(rawPid ?? "")));
 }

@@ -116,7 +116,8 @@ export function createInputStrip(index, ctl) {
       statusDot.dataset.state = status.state;
       statusDot.title = status.message;
     },
-    renderMeter(channel) { meter.render(channel); }
+    renderMeter(channel) { meter.render(channel); },
+    setStatusTitle(message) { statusDot.title = message; }
   };
 }
 

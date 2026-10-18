@@ -45,7 +45,7 @@ const DEFAULT_CONFIG = Object.freeze({
   driveDb: 0,
   softClip: { enabled: true, thresholdDb: -6 },
   limiter: { enabled: true, ceilingDb: -1 },
-  latencyHint: "interactive",
+  latencyHint: "balanced",
   showMultichannelDevices: false,
   enforceRoutingSafety: true,
   compactMode: false,
@@ -184,7 +184,7 @@ function migrateConfig(rawConfig) {
       enabled: bool(limiter.enabled, true),
       ceilingDb: num(limiter.ceilingDb, -1, -12, 0)
     },
-    latencyHint: LATENCY_HINTS.includes(raw.latencyHint) ? raw.latencyHint : "interactive",
+    latencyHint: LATENCY_HINTS.includes(raw.latencyHint) ? raw.latencyHint : "balanced",
     showMultichannelDevices: bool(raw.showMultichannelDevices, false),
     enforceRoutingSafety: bool(raw.enforceRoutingSafety, true),
     compactMode: bool(raw.compactMode, false),

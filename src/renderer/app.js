@@ -13,6 +13,13 @@ import { $, h, debounce } from "./ui/dom.js";
 const api = window.mixerAPI;
 const APP_POLL_MS = 5000;
 
+// "Latency / Stability" profiles: Web Audio latency hint + app-capture jitter buffer.
+export const LATENCY_PROFILES = {
+  interactive: { targetMs: 40, minTargetMs: 25 },
+  balanced: { targetMs: 60, minTargetMs: 40 },
+  playback: { targetMs: 100, minTargetMs: 70 }
+};
+
 const state = {
   config: null,
   deviceStates: {},
@@ -95,7 +102,9 @@ async function startEngine() {
   sources = new SourceManager({
     ctxProvider: () => engine.ctx,
     appAudio: api.appAudio,
-    onEnded: (sourceId, reason) => handleSourceEnded(sourceId, reason)
+    onEnded: (sourceId, reason) => handleSourceEnded(sourceId, reason),
+    onAppStats: (sourceId, stats) => handleAppStats(sourceId, stats),
+    getBufferSettings: () => LATENCY_PROFILES[state.config.latencyHint] || LATENCY_PROFILES.balanced
   });
   applyMasterProcessing();
   for (let i = 0; i < inputCount(); i++) await connectInput(i);
@@ -127,15 +136,14 @@ function applyStripParams() {
 async function applyBuses() {
   if (!engine?.ctx) return;
   const active = busActive();
-  for (const id of BUS_IDS) {
+  BUS_IDS.forEach(id => {
     const bus = state.config.buses[id];
     engine.setBusParams(id, { volumeDb: bus.volumeDb, mute: bus.mute, active: active[id] });
-    try {
-      await engine.setBusOutputDevice(id, active[id] ? bus.deviceId : "");
-    } catch (error) {
-      reportError("Output", error, `Could not use ${bus.label || "the selected device"} for ${BUS_LABELS[id].name}`);
-    }
-  }
+  });
+  const errors = await engine.setOutputs(Object.fromEntries(BUS_IDS.map(id => [id, active[id] ? state.config.buses[id].deviceId : ""])));
+  Object.entries(errors).forEach(([id, error]) => {
+    reportError("Output", error, `Could not use ${state.config.buses[id].label || "the selected device"} for ${BUS_LABELS[id].name}`);
+  });
   applyStripParams();
 }
 
@@ -159,6 +167,22 @@ async function connectInput(i) {
     reportError("Input", error, `Could not open ${cfg.label || `input ${i + 1}`}`);
   }
   applyStripParams();
+}
+
+function handleAppStats(sourceId, stats) {
+  state.config.inputs.forEach((cfg, i) => {
+    if (cfg.deviceId !== sourceId || state.stripStatus[i]?.state !== "live") return;
+    const prev = state.stripStatus[i].underruns || 0;
+    state.stripStatus[i] = {
+      state: "live",
+      underruns: stats.underruns,
+      message: `${cfg.label}: live · buffer ${stats.fillMs}/${stats.targetMs} ms · ${stats.underruns} dropout(s) · drift ${((stats.rate - 1) * 100).toFixed(2)} %`
+    };
+    inputStrips[i]?.setStatusTitle(state.stripStatus[i].message);
+    if (stats.underruns > prev && stats.underruns % 5 === 0) {
+      toast(`${cfg.label}: audio dropouts detected. The buffer grew automatically; consider Settings → Latency / Stability → Stable.`, "info", 6000);
+    }
+  });
 }
 
 function handleSourceEnded(sourceId, reason) {

@@ -64,28 +64,103 @@ test("limiter bypass passes signal through (delayed)", () => {
   assert.equal(out[4000], 2);
 });
 
-test("app PCM player: full-scale int16 is not clamped and resampling works", () => {
-  for (const rate of [48000, 44100]) {
-    const Player = loadProcessor(WORKLET_SOURCES.APP_PCM_PLAYER, rate);
-    const p = new Player({ processorOptions: { inputRate: 48000, targetLatency: 0.01, maxLatency: 0.12 } });
-    const frames = 4800;
-    const pcm = new Int16Array(frames * 2);
-    for (let i = 0; i < frames; i++) { pcm[2 * i] = i % 2 ? 32767 : -32768; pcm[2 * i + 1] = 16384; }
-    p.push(pcm);
-    const L = new Float32Array(128), R = new Float32Array(128);
-    p.process([], [[L, R]]);
-    assert.ok(Math.abs(R[10] - 0.5) < 1e-6, `right channel @${rate}`);
-    if (rate === 48000) {
-      assert.equal(L[0], -1);
-      assert.ok(Math.abs(L[1] - 32767 / 32768) < 1e-9);
-    }
-    assert.ok(p.fill < frames);
+function pcmBytes(frames, fn, startFrame = 0) {
+  const b = new Uint8Array(frames * 4);
+  const v = new DataView(b.buffer);
+  for (let i = 0; i < frames; i++) {
+    const [l, r] = fn(startFrame + i);
+    v.setInt16(i * 4, l, true);
+    v.setInt16(i * 4 + 2, r, true);
   }
+  return b;
+}
+
+function newPlayer(rate = 48000, opts = {}) {
+  const Player = loadProcessor(WORKLET_SOURCES.APP_PCM_PLAYER, rate);
+  return new Player({ processorOptions: { inputRate: 48000, targetMs: 60, minTargetMs: 40, ...opts } });
+}
+
+function pull(p, blocks) {
+  const out = [];
+  const L = new Float32Array(128), R = new Float32Array(128);
+  for (let b = 0; b < blocks; b++) {
+    p.process([], [[L, R]]);
+    out.push(...L);
+  }
+  return Float32Array.from(out);
+}
+
+test("jitter buffer: full-scale int16 decoded without clamping, frames split across messages", () => {
+  const p = newPlayer();
+  const bytes = pcmBytes(4800, i => [i % 2 ? 32767 : -32768, 16384]);
+  // deliver in odd-sized pieces to split frames
+  for (let i = 0; i < bytes.length; i += 333) p.push(bytes.subarray(i, i + 333));
+  assert.equal(p.fill, 4800);
+  assert.equal(p.left[0], -1);
+  assert.ok(Math.abs(p.left[1] - 32767 / 32768) < 1e-9);
+  assert.equal(p.right[123], 0.5);
 });
 
-test("app PCM player bounds latency when the producer runs ahead", () => {
-  const Player = loadProcessor(WORKLET_SOURCES.APP_PCM_PLAYER);
-  const p = new Player({ processorOptions: { inputRate: 48000, targetLatency: 0.03, maxLatency: 0.12 } });
-  p.push(new Int16Array(48000 * 2 * 0.3));
-  assert.ok(p.fill <= 48000 * 0.12, `fill ${p.fill}`);
+test("jitter buffer: waits for target, then plays with a fade-in (no click)", () => {
+  const p = newPlayer();
+  p.push(pcmBytes(1000, () => [16384, 16384]));
+  let out = pull(p, 2);
+  assert.ok(out.every(v => v === 0), "still buffering below 60 ms");
+  p.push(pcmBytes(3000, () => [16384, 16384]));
+  out = pull(p, 4);
+  assert.ok(out[0] < 0.01, "starts from silence");
+  assert.ok(Math.abs(out[out.length - 1] - 0.5) < 1e-6, "reaches full level");
+  for (let i = 1; i < out.length; i++) assert.ok(Math.abs(out[i] - out[i - 1]) < 0.01, "smooth ramp");
+});
+
+test("jitter buffer: absorbs clock drift by resampling, no dropouts", () => {
+  // producer clock 0.2 % fast and delivering in bursty 10 ms chunks with jitter
+  const p = newPlayer();
+  let produced = 0, t = 0;
+  const sine = i => { const v = Math.round(12000 * Math.sin(i / 20)); return [v, v]; };
+  for (let block = 0; block < 48000 * 30 / 128; block++) {
+    t += 128 / 48000;
+    const due = Math.floor(t * 48000 * 1.002);
+    while (produced + 480 <= due + (block % 7 === 0 ? 480 : 0)) {
+      p.push(pcmBytes(480, sine, produced));
+      produced += 480;
+    }
+    pull(p, 1);
+  }
+  assert.equal(p.underruns, 0);
+  const fillMs = p.fill / 48;
+  assert.ok(fillMs > 30 && fillMs < 130, `buffer stays near target (${fillMs.toFixed(1)} ms)`);
+  assert.ok(p.rate > 1.0005, "playback sped up slightly to follow the fast producer");
+});
+
+test("jitter buffer: underrun fades out, grows target, recovers with a fade-in", () => {
+  const p = newPlayer();
+  const tone = () => [16384, 16384];
+  p.push(pcmBytes(3000, tone));
+  pull(p, 10);
+  const before = p.target;
+  const out = pull(p, 30); // starve it
+  assert.equal(p.underruns, 1);
+  assert.ok(p.target > before, "target grew");
+  for (let i = 1; i < out.length; i++) assert.ok(Math.abs(out[i] - out[i - 1]) < 0.02, `no click at ${i}`);
+  p.push(pcmBytes(10000, tone));
+  const resumed = pull(p, 10);
+  assert.ok(resumed[0] < 0.01 && Math.abs(resumed[resumed.length - 1] - 0.5) < 1e-6);
+});
+
+test("jitter buffer: overflow after a stall skips ahead with a crossfade", () => {
+  const p = newPlayer();
+  p.push(pcmBytes(3000, () => [8000, 8000]));
+  pull(p, 10);
+  p.push(pcmBytes(48000, () => [8000, 8000])); // 1 s burst
+  const out = pull(p, 20);
+  assert.ok(p.fill / 48 < 120, `latency bounded (${p.fill / 48} ms)`);
+  for (let i = 1; i < out.length; i++) assert.ok(Math.abs(out[i] - out[i - 1]) < 0.02);
+});
+
+test("jitter buffer works at 44.1 kHz output", () => {
+  const p = newPlayer(44100);
+  p.push(pcmBytes(4800, () => [16384, -16384]));
+  const out = pull(p, 20);
+  assert.ok(Math.abs(out[out.length - 1] - 0.5) < 1e-6);
 });
