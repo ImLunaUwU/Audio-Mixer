@@ -10,6 +10,7 @@ Desktop Electron app for low-latency audio routing and monitoring with per-input
 	- Monitor 2 send volume + mute
 	- Mixed output send volume + mute
 	- Force mono
+- Per-application audio capture: pick a running app (e.g. Spotify, a browser, a game) as an input source and capture only that app's audio.
 - 3 independent output buses:
 	- Monitor Output
 	- Monitor 2 Output
@@ -31,6 +32,17 @@ Desktop Electron app for low-latency audio routing and monitoring with per-input
 ## Requirements
 
 - Windows audio devices with `setSinkId` support for output device assignment
+- Windows 10 2004+ x64 for per-application capture
+
+## Per-Application Audio Capture
+
+Each Input Source dropdown has an **Applications** group listing running apps with a visible window (shown as `App: <exe name>`; hover for the window title). Selecting one captures only that process (and its child processes) into the mixer. It gets the same per-input controls, presets and device-state memory as a hardware input.
+
+- Click **Refresh Applications** (under the routing selectors) to rescan after starting a new app.
+- If a captured app is restarted, it is re-bound by its exe name on refresh. If it closed, the input clears.
+- How it works: Windows WASAPI *process loopback* (`AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`) through the [`application-loopback`](https://github.com/WerdoxDev/application-loopback) package's native helper executables. The main process streams raw PCM (16-bit, stereo, 48 kHz) to the renderer, where an AudioWorklet feeds it into the audio graph. The worklet keeps about 120 ms of buffer at most.
+- Requirements: Windows 10 version 2004 (build 19041) or newer, x64. On other platforms the Applications group just stays empty.
+- Limitations: only apps with a visible top-level window are listed. Apps that play audio from a separate windowless process are captured through the process tree, but you may need to pick the parent app. Capturing an app does not mute it on its normal output device.
 
 ## Routing Model
 

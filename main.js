@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { execFile } = require("child_process");
 const squirrelStartup = require('electron-squirrel-startup');
 const { version } = require("./package.json");
 
@@ -315,6 +316,108 @@ ipcMain.handle("app:setStartOnBoot", (event, enabled) => {
   }
 });
 
+
+// ---------------------------------------------------------------------------
+// Per-application audio capture (Windows 10 2004+ / WASAPI process loopback)
+// ---------------------------------------------------------------------------
+// Uses the `application-loopback` package, which ships small native helper
+// executables: ProcessList.exe (lists windows + PIDs) and ApplicationLoopback.exe
+// (captures one process tree and writes raw PCM s16le, 2ch, 48 kHz to stdout).
+// PCM chunks are forwarded to the renderer, which turns them into a MediaStream.
+const APP_AUDIO_SUPPORTED = process.platform === "win32" && process.arch === "x64";
+let appLoopback = null;
+const appCaptureOwners = new Map();
+
+function getAppLoopback() {
+  if (!APP_AUDIO_SUPPORTED) return null;
+  if (appLoopback) return appLoopback;
+  try {
+    appLoopback = require("application-loopback");
+    // Executables can't be spawned from inside app.asar; point at the unpacked copy.
+    const binRoot = path.join(path.dirname(require.resolve("application-loopback")), "..", "bin")
+      .replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+    appLoopback.setExecutablesRoot(binRoot);
+  } catch (error) {
+    console.error("application-loopback unavailable:", error);
+    appLoopback = null;
+  }
+  return appLoopback;
+}
+
+function getProcessImageNames() {
+  return new Promise(resolve => {
+    execFile("tasklist", ["/fo", "csv", "/nh"], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      const names = new Map();
+      if (error || !stdout) return resolve(names);
+      stdout.split(/\r?\n/).forEach(line => {
+        const match = line.match(/^"([^"]+)","(\d+)"/);
+        if (match) names.set(match[2], match[1]);
+      });
+      resolve(names);
+    });
+  });
+}
+
+async function listAudioApps() {
+  const loopback = getAppLoopback();
+  if (!loopback) return [];
+  const [windows, imageNames] = await Promise.all([
+    loopback.getActiveWindowProcessIds().catch(() => []),
+    getProcessImageNames()
+  ]);
+  const byPid = new Map();
+  windows.forEach(win => {
+    const pid = String(win.processId || "").trim();
+    if (!pid || pid === String(process.pid) || byPid.has(pid)) return;
+    const exeName = imageNames.get(pid) || "";
+    byPid.set(pid, { pid, exeName, title: (win.title || "").trim() });
+  });
+  return [...byPid.values()].sort((a, b) => (a.exeName || a.title).localeCompare(b.exeName || b.title));
+}
+
+function stopAppCapture(pid) {
+  const loopback = getAppLoopback();
+  appCaptureOwners.delete(pid);
+  if (!loopback) return false;
+  try {
+    return loopback.stopAudioCapture(pid);
+  } catch (_) {
+    return false;
+  }
+}
+
+function stopAllAppCaptures() {
+  [...appCaptureOwners.keys()].forEach(stopAppCapture);
+}
+
+ipcMain.handle("appAudio:isSupported", () => !!getAppLoopback());
+
+ipcMain.handle("appAudio:list", () => listAudioApps());
+
+ipcMain.handle("appAudio:start", (event, rawPid) => {
+  const pid = String(rawPid || "").replace(/[^0-9]/g, "");
+  const loopback = getAppLoopback();
+  if (!loopback) throw new Error("Per-app audio capture is only supported on Windows 10 (2004+) x64.");
+  if (!pid) throw new Error("Invalid process id.");
+  stopAppCapture(pid);
+  const sender = event.sender;
+  appCaptureOwners.set(pid, sender);
+  loopback.startAudioCapture(pid, {
+    onData: chunk => {
+      if (sender.isDestroyed()) {
+        stopAppCapture(pid);
+        return;
+      }
+      sender.send("appAudio:data", pid, chunk);
+    }
+  });
+  return { pid, sampleRate: 48000, channels: 2, format: "s16le" };
+});
+
+ipcMain.on("appAudio:stop", (event, rawPid) => {
+  stopAppCapture(String(rawPid || ""));
+});
+
 if (squirrelStartup) app.quit();
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -328,6 +431,7 @@ if (!gotTheLock) {
 
   app.on("before-quit", () => {
     isQuitting = true;
+    stopAllAppCaptures();
   });
 
   app.whenReady().then(() => {
