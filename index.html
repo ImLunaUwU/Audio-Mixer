@@ -151,6 +151,13 @@
             <input type="range" id="overloadControl" min="1" max="3" step="0.01" value="1">
             <span id="overloadDisplay">100%</span>
           </label>
+          <label title="Smoothly saturates peaks instead of hard-cutting at 0 dBFS. Applied at the end of each output bus.">
+            <input type="checkbox" id="softClipToggle" checked> Soft Clipping
+          </label>
+          <label>Soft Clip Knee (threshold):
+            <input type="range" id="softClipThreshold" min="-18" max="-0.5" step="0.5" value="-6">
+            <span id="softClipThresholdDisplay">-6.0 dBFS</span>
+          </label>
           <button id="resetAdvanced">Reset Advanced Controls</button>
         </div>
       </details>

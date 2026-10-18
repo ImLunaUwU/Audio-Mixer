@@ -16,7 +16,8 @@ Desktop Electron app for low-latency audio routing and monitoring with per-input
 	- Monitor 2 Output
 	- Mixed Output
 - Master controls and live meters for each bus.
-- EQ (low/mid/high), overload gain, and limiter stages.
+- EQ (low/mid/high) and overload gain on every output bus.
+- Soft clipping (Advanced settings): peaks are smoothly saturated (tanh knee, 4x oversampled) instead of hard-cut at 0 dBFS, with an adjustable knee threshold (default -6 dBFS).
 - Presets for full routing snapshots and custom EQ presets.
 - Device safety options:
 	- Prevent duplicate device selection in input/output groups
@@ -61,6 +62,9 @@ Each chain has its own master gain and meter. Monitor chains are independent.
 - Enforce routing safety restrictions (duplicate/cable-loop guard)
 - EQ preset management + EQ controls
 - Overload gain
+- Soft clipping toggle + knee threshold
+
+Bus chain (identical for device and application inputs): `input -> per-input send gain -> EQ low/mid/high -> overload -> master -> soft clip -> output + meter`.
 
 ## Troubleshooting
 

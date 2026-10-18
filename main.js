@@ -41,6 +41,8 @@ const DEFAULT_CONFIG = {
   eqCustomPresets: [],
   presets: [],
   overloadGain: 1,
+  softClipEnabled: true,
+  softClipThresholdDb: -6,
 };
 
 let win;
@@ -139,6 +141,10 @@ function migrateConfig(rawConfig = {}) {
     merged.presets = [];
   }
   merged.overloadGain = Number.isFinite(merged.overloadGain) ? merged.overloadGain : 1;
+  merged.softClipEnabled = typeof merged.softClipEnabled === "boolean" ? merged.softClipEnabled : true;
+  merged.softClipThresholdDb = Number.isFinite(merged.softClipThresholdDb)
+    ? Math.min(-0.5, Math.max(-18, merged.softClipThresholdDb))
+    : -6;
 
   const existingInputs = Array.isArray(rawConfig.inputs) ? rawConfig.inputs : [];
   merged.inputs = [0, 1, 2].map(index => normalizeInput(existingInputs[index]));

@@ -16,6 +16,8 @@ let config = {
   eq: { low: 0, mid: 0, high: 0 },
   eqCustomPresets: [],
   overloadGain: 1,
+  softClipEnabled: true,
+  softClipThresholdDb: -6,
   presets: []
 };
 
@@ -62,6 +64,9 @@ const ui = {
   eqPresetSave: null,
   eqPresetDelete: null,
   overloadSlider: null,
+  softClipToggle: null,
+  softClipThresholdSlider: null,
+  softClipThresholdDisplay: null,
   eqLowDisplay: null,
   eqMidDisplay: null,
   eqHighDisplay: null,
@@ -114,6 +119,9 @@ const gainMap = {
   limiterMonitor: null,
   limiterMonitor2: null,
   limiterOutput: null,
+  softClipMonitor: null,
+  softClipMonitor2: null,
+  softClipOutput: null,
   perInput: []
 };
 
@@ -410,6 +418,9 @@ function initialiseUiRefs() {
   ui.eqPresetSave = document.getElementById("eqPresetSave");
   ui.eqPresetDelete = document.getElementById("eqPresetDelete");
   ui.overloadSlider = document.getElementById("overloadControl");
+  ui.softClipToggle = document.getElementById("softClipToggle");
+  ui.softClipThresholdSlider = document.getElementById("softClipThreshold");
+  ui.softClipThresholdDisplay = document.getElementById("softClipThresholdDisplay");
   ui.eqLowDisplay = document.getElementById("eqLowDisplay");
   ui.eqMidDisplay = document.getElementById("eqMidDisplay");
   ui.eqHighDisplay = document.getElementById("eqHighDisplay");
@@ -456,6 +467,12 @@ function applyUiFromConfig() {
   ui.eqMidDisplay.textContent = `${parseFloat(config.eq.mid).toFixed(1)} dB`;
   ui.eqHighDisplay.textContent = `${parseFloat(config.eq.high).toFixed(1)} dB`;
   ui.overloadDisplay.textContent = `${Math.round(config.overloadGain * 100)}%`;
+  if (ui.softClipToggle) ui.softClipToggle.checked = config.softClipEnabled !== false;
+  if (ui.softClipThresholdSlider) {
+    ui.softClipThresholdSlider.value = config.softClipThresholdDb;
+    ui.softClipThresholdSlider.disabled = config.softClipEnabled === false;
+  }
+  if (ui.softClipThresholdDisplay) ui.softClipThresholdDisplay.textContent = `${Number(config.softClipThresholdDb).toFixed(1)} dBFS`;
   applyCompactMode(config.compactMode);
   if (ui.showMultichannelDevicesToggle) {
     ui.showMultichannelDevicesToggle.checked = !!config.showMultichannelDevices;
@@ -598,6 +615,53 @@ function applyMasterAudioParams() {
   if (gainMap.overloadMonitor) rampGain(gainMap.overloadMonitor, config.overloadGain, 0.03);
   if (gainMap.overloadMonitor2) rampGain(gainMap.overloadMonitor2, config.overloadGain, 0.03);
   if (gainMap.overloadOutput) rampGain(gainMap.overloadOutput, config.overloadGain, 0.03);
+  applySoftClipParams();
+}
+
+// Soft clipper curve: linear (unity) below the threshold, then a tanh knee that
+// approaches but never exceeds 0 dBFS. Inputs well above 1.0 (from EQ / overload /
+// summing inputs) are folded smoothly instead of being hard-cut at the output.
+const SOFT_CLIP_CURVE_SIZE = 8192;
+const SOFT_CLIP_INPUT_RANGE = 8; // curve covers [-8, 8] (+18 dBFS headroom)
+
+function buildSoftClipCurve(thresholdDb) {
+  const threshold = Math.min(0.99, Math.max(0.05, Math.pow(10, thresholdDb / 20)));
+  const headroom = 1 - threshold;
+  const curve = new Float32Array(SOFT_CLIP_CURVE_SIZE);
+  for (let i = 0; i < SOFT_CLIP_CURVE_SIZE; i++) {
+    const x = ((i / (SOFT_CLIP_CURVE_SIZE - 1)) * 2 - 1) * SOFT_CLIP_INPUT_RANGE;
+    const magnitude = Math.abs(x);
+    const shaped = magnitude <= threshold
+      ? magnitude
+      : threshold + headroom * Math.tanh((magnitude - threshold) / headroom);
+    curve[i] = Math.sign(x) * shaped;
+  }
+  return curve;
+}
+
+function softClipPreGain() {
+  return 1 / SOFT_CLIP_INPUT_RANGE;
+}
+
+function applySoftClipParams() {
+  const enabled = config.softClipEnabled !== false;
+  const curve = enabled ? buildSoftClipCurve(config.softClipThresholdDb) : null;
+  ["softClipMonitor", "softClipMonitor2", "softClipOutput"].forEach(key => {
+    const stage = gainMap[key];
+    if (!stage) return;
+    // WaveShaper indexes its curve with input in [-1, 1]; scale the signal down so
+    // the curve covers +/-SOFT_CLIP_INPUT_RANGE. Curve values are already in output units.
+    stage.pre.gain.value = enabled ? softClipPreGain() : 1;
+    stage.shaper.curve = curve;
+    stage.shaper.oversample = enabled ? "4x" : "none";
+  });
+}
+
+function createSoftClipStage() {
+  const pre = audioCtx.createGain();
+  const shaper = audioCtx.createWaveShaper();
+  pre.connect(shaper);
+  return { pre, shaper, input: pre, output: shaper };
 }
 
 function configureLimiter(compressor) {
@@ -897,17 +961,31 @@ async function ensureAudioEngine() {
     audioGraph.monitor2MeterBuffer = new Uint8Array(audioGraph.monitor2MeterAnalyser.fftSize);
     audioGraph.outputMeterBuffer = new Uint8Array(audioGraph.outputMeterAnalyser.fftSize);
 
-    gainMap.monitorMaster.connect(audioGraph.monitorOut);
-    gainMap.monitor2Master.connect(audioGraph.monitor2Out);
+    gainMap.softClipMonitor = createSoftClipStage();
+    gainMap.softClipMonitor2 = createSoftClipStage();
+    gainMap.softClipOutput = createSoftClipStage();
 
-    gainMap.outputMaster.connect(audioGraph.mixedOut);
-    gainMap.monitorMaster.connect(audioGraph.monitorMeterAnalyser);
-    gainMap.monitor2Master.connect(audioGraph.monitor2MeterAnalyser);
-    gainMap.outputMaster.connect(audioGraph.outputMeterAnalyser);
+    // Bus chain (same for every input type, device or application):
+    // inputs -> EQ low -> EQ mid -> EQ high -> overload -> master -> soft clip -> out + meter
+    const wireBus = (eqLow, eqMid, eqHigh, overload, master, softClip, destination, analyser) => {
+      eqLow.connect(eqMid).connect(eqHigh).connect(overload).connect(master).connect(softClip.input);
+      softClip.output.connect(destination);
+      softClip.output.connect(analyser);
+      return eqLow;
+    };
 
-    audioGraph.eqInputMonitor = gainMap.monitorMaster;
-    audioGraph.eqInputMonitor2 = gainMap.monitor2Master;
-    audioGraph.eqInputOutput = gainMap.outputMaster;
+    audioGraph.eqInputMonitor = wireBus(
+      gainMap.eqLowMonitor, gainMap.eqMidMonitor, gainMap.eqHighMonitor, gainMap.overloadMonitor,
+      gainMap.monitorMaster, gainMap.softClipMonitor, audioGraph.monitorOut, audioGraph.monitorMeterAnalyser
+    );
+    audioGraph.eqInputMonitor2 = wireBus(
+      gainMap.eqLowMonitor2, gainMap.eqMidMonitor2, gainMap.eqHighMonitor2, gainMap.overloadMonitor2,
+      gainMap.monitor2Master, gainMap.softClipMonitor2, audioGraph.monitor2Out, audioGraph.monitor2MeterAnalyser
+    );
+    audioGraph.eqInputOutput = wireBus(
+      gainMap.eqLowOutput, gainMap.eqMidOutput, gainMap.eqHighOutput, gainMap.overloadOutput,
+      gainMap.outputMaster, gainMap.softClipOutput, audioGraph.mixedOut, audioGraph.outputMeterAnalyser
+    );
 
     audioGraph.monitorAudio = new Audio();
     audioGraph.monitorAudio.srcObject = audioGraph.monitorOut.stream;
@@ -2022,11 +2100,32 @@ function setupUiHandlers() {
     saveConfig();
   };
 
+  if (ui.softClipToggle) {
+    ui.softClipToggle.onchange = () => {
+      config.softClipEnabled = ui.softClipToggle.checked;
+      if (ui.softClipThresholdSlider) ui.softClipThresholdSlider.disabled = !config.softClipEnabled;
+      applySoftClipParams();
+      saveConfig();
+      setStatus(config.softClipEnabled ? "Soft clipping enabled" : "Soft clipping disabled (hard clip at 0 dBFS)");
+    };
+  }
+
+  if (ui.softClipThresholdSlider) {
+    ui.softClipThresholdSlider.oninput = () => {
+      config.softClipThresholdDb = parseFloat(ui.softClipThresholdSlider.value);
+      if (ui.softClipThresholdDisplay) ui.softClipThresholdDisplay.textContent = `${config.softClipThresholdDb.toFixed(1)} dBFS`;
+      applySoftClipParams();
+      saveConfig();
+    };
+  }
+
   const resetButton = document.getElementById("resetAdvanced");
   if (resetButton) {
     resetButton.onclick = () => {
       config.eq = { ...BUILTIN_EQ_PRESETS.flat };
       config.overloadGain = 1;
+      config.softClipEnabled = true;
+      config.softClipThresholdDb = -6;
       applyUiFromConfig();
       applyMasterAudioParams();
       refreshEqPresetSelect("flat");
