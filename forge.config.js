@@ -29,7 +29,12 @@ module.exports = {
         unpack: "{**/*.json,**/application-loopback/bin/**}"
       },
       ignore: [
-        "config.json"
+        /^\/config\.json$/,
+        /^\/deviceStates\.json$/,
+        /^\/test($|\/)/,
+        /^\/scripts($|\/)/,
+        /^\/out($|\/)/,
+        /^\/\.github($|\/)/
       ]
     },
     rebuildConfig: {},
