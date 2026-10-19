@@ -26,10 +26,15 @@ module.exports = {
         LegalCopyright: "Copyright (c) 2026 Luna. All rights reserved."
       },
       asar: {
-        unpack: "**/*.json"
+        unpack: "{**/*.json,**/application-loopback/bin/**}"
       },
       ignore: [
-        "config.json"
+        /^\/config\.json$/,
+        /^\/deviceStates\.json$/,
+        /^\/test($|\/)/,
+        /^\/scripts($|\/)/,
+        /^\/out($|\/)/,
+        /^\/\.github($|\/)/
       ]
     },
     rebuildConfig: {},
@@ -65,7 +70,7 @@ module.exports = {
       appId: "dev.imluna.audio-mixer",
       productName: "Audio Mixer",
       asar: {
-        unpack: "**/*.json"
+        unpack: "{**/*.json,**/application-loopback/bin/**}"
       },
       files: [
         "**/*",

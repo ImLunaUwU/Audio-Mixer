@@ -1,59 +1,156 @@
-# Audio Mixer
+# Luna's Audio Mixer
 
-Desktop Electron app for low-latency audio routing and monitoring with per-input mixing controls.
+A low-latency desktop mixer for Windows. Capture microphones, line inputs **or individual applications**, mix them on channel strips and route the result to up to three output devices (e.g. headphones, speakers and a virtual cable for streaming).
+
+![Mixer](assets/screenshot.png)
 
 ## Features
 
-- Up to 3 input sources with independent controls per input:
-	- Enable/disable input
-	- Monitor 1 send volume + mute
-	- Monitor 2 send volume + mute
-	- Mixed output send volume + mute
-	- Force mono
-- 3 independent output buses:
-	- Monitor Output
-	- Monitor 2 Output
-	- Mixed Output
-- Master controls and live meters for each bus.
-- EQ (low/mid/high), overload gain, and limiter stages.
-- Presets for full routing snapshots and custom EQ presets.
-- Device safety options:
-	- Prevent duplicate device selection in input/output groups
-	- Cable loop protection (Input/Output cable pair guard)
-	- Optional bypass toggle in Advanced settings
-- Tray behavior (close to tray), start-on-boot option, compact mode.
+**Inputs (3 channel strips)**
+- Source: any capture device **or a running application** (per-app capture via Windows WASAPI process loopback).
+- Gain fader in dB, from -∞ to **+24 dB**.
+- Mute, Solo, Mono sum, Enable.
+- Three sends per strip (MON 1 / MON 2 / MIX), each with its own on/off and level.
+- Peak + RMS meter with peak hold and a latching clip light.
+- Each source remembers its own strip settings. Apps are remembered by exe name.
 
-## Tech Stack
+**Outputs (3 buses: Monitor 1, Monitor 2, Mixed Output)**
+- Output device selector, fader up to +12 dB, mute.
+- Peak + RMS meter, clip light and limiter gain-reduction readout.
 
-- Electron
-- Vanilla HTML/CSS/JavaScript (no frontend framework)
+**Master processing (all buses)**
+- 3-band EQ (low shelf 180 Hz, peak 1.4 kHz, high shelf 5.6 kHz) with built-in and saved presets.
+- Drive (post-mix boost, 0 to +12 dB).
+- **Soft clipping**: a tanh knee, 4× oversampled, with an adjustable knee. It saturates peaks smoothly instead of hard-cutting them.
+- **Peak limiter**: a 3 ms lookahead brickwall with an adjustable ceiling (default -1 dBFS).
+
+**Robustness**
+- Hot-plug: a missing device or app keeps its slot and reconnects automatically when it comes back (matched by name). Restarted apps are picked up again within about 5 s.
+- Capture helper processes are always cleaned up: when a source is unused, and on reload, crash or quit.
+- Settings are written atomically and migrated from every earlier version. An unreadable config is backed up, not lost.
+
+**Workflow**
+- Mix presets: save, recall and delete, with Ctrl+S and Ctrl+1–9.
+- Keyboard shortcuts (press `?` in the app).
+- Tray icon (show, mute all, quit), close-to-tray, start with Windows (hidden).
+- Remembers the window size and position. Responsive layout and a compact mode.
+
+## Signal flow
+
+```
+Input strip (devices and apps alike)
+  source ─► stereo | mono-sum ─► gain (≤ +24 dB) ─► mute/solo ─┬─► meter
+                                                               ├─► send MON 1 ─┐
+                                                               ├─► send MON 2 ─┤
+                                                               └─► send MIX ───┤
+Output bus (×3)                                                                ▼
+  Σ ─► EQ low/mid/high ─► drive ─► fader ─► soft clip ─► limiter ─┬─► meter
+                                                                  └─► output device
+```
+
+The engine runs at 48 kHz, the same rate as app capture, so app audio isn't resampled. Every parameter change is ramped to avoid zipper noise and clicks.
+
+## Stutter-free playback
+
+- **Adaptive jitter buffer for app capture.** It plays after about 40, 60 or 100 ms of audio is buffered, depending on the Latency / Stability profile.
+  - **Dropouts:** after a dropout, the target grows ×1.5, up to 400 ms. After 20 s without a dropout, it slowly shrinks back.
+  - **Clock drift** between the app's device and your output device is absorbed by nudging the playback rate (at most ±0.5 %, inaudible). Samples are never dropped or zero-filled.
+  - **Fades:** dropouts fade out and resume with a 5 ms fade-in.
+  - **Bursts after a stall** are skipped with a crossfade, so latency stays bounded.
+- **Audio goes straight to the audio thread.** PCM travels from the capture helper to the AudioWorklet over a dedicated `MessagePort`. It never waits behind UI work on the renderer thread. The audio callbacks don't allocate memory, which avoids garbage-collection hiccups.
+- **Fewer clock domains.** The first active output plays directly from the engine's AudioContext (`setSinkId`), and only the extra outputs use bridge contexts. Unused bridge contexts are closed. The window keeps full audio priority while minimized (`backgroundThrottling: false`).
+- **Latency / Stability setting** (Settings → Audio engine):
+
+| Profile | Web Audio latency hint | App-capture buffer |
+| --- | --- | --- |
+| Low latency | `interactive` | ~40 ms (min 25) |
+| Balanced (default) | `balanced` | ~60 ms (min 40) |
+| Stable | `playback` | ~100 ms (min 70) |
+
+Hover an app input's status light to see its live buffer level, dropout count and drift correction.
+
+## Keyboard shortcuts
+
+| Keys | Action |
+| --- | --- |
+| 1 – 3 | Select input strip |
+| ↑ / ↓ (Shift) | Nudge selected fader ±0.5 dB (±3 dB) |
+| 0 | Reset selected fader to 0 dB |
+| M / S / O / E | Mute / Solo / Mono / Enable selected input |
+| Shift + M | Mute / unmute all outputs |
+| Ctrl + S | Save preset |
+| Ctrl + 1 – 9 | Load preset 1 – 9 |
+| Ctrl + R, F5 | Refresh devices and applications |
+| , | Settings |
+| ? | Help |
+| Esc | Close panel |
+
+Faders also respond to the mouse wheel (Shift = coarse). Double-click a fader or its readout to return to 0 dB.
+
+## Per-application capture
+
+Running apps with a visible window appear in each input's **Applications** group. Selecting one captures only that process tree, using `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` through the native helpers in [`application-loopback`](https://github.com/WerdoxDev/application-loopback). The main process streams 16-bit / 48 kHz stereo PCM to the renderer. There, an AudioWorklet feeds it straight into the strip, through an adaptive jitter buffer (see *Stutter-free playback*).
+
+- Requires **Windows 10 2004 (build 19041) or newer, x64**.
+- Capturing doesn't mute the app on its normal output device.
+- Apps that play audio from a windowless helper process are captured through the parent app's process tree.
 
 ## Requirements
 
-- Windows audio devices with `setSinkId` support for output device assignment
+- Windows 10/11 x64
+- Optional: a virtual audio cable (e.g. VB-CABLE) to send the Mixed Output to OBS, Discord, etc.
 
-## Routing Model
+## Development
 
-Each input is split into three send paths:
+```sh
+npm install
+npm start            # run in development (settings are stored in the repo folder)
+npm test             # unit tests: config migration, DSP, limiter, jitter buffer, graph wiring
+npm run check        # syntax check of every source file
+npm run make         # build the Squirrel installer + zip into out/make
+```
 
-- Monitor 1 chain
-- Monitor 2 chain
-- Mixed Output chain
+A headless smoke test boots the real app with a throwaway settings folder and takes a screenshot:
 
-Each chain has its own master gain and meter. Monitor chains are independent.
+```sh
+xvfb-run electron --use-fake-device-for-media-stream --use-fake-ui-for-media-stream scripts/smoke-main.js shot.png
+```
 
-## Advanced Settings
+### Project layout
 
-- Start app on system boot
-- Show multichannel devices
-- Enforce routing safety restrictions (duplicate/cable-loop guard)
-- EQ preset management + EQ controls
-- Overload gain
+```
+src/
+  main/        Electron main process
+    index.js       window, tray, IPC, security, lifecycle
+    config.js      config schema + migration (pure, unit-tested)
+    store.js       atomic JSON persistence
+    appCapture.js  per-app capture helper management
+  preload/     sandboxed bridge (window.mixerAPI)
+  renderer/    UI + audio engine (ES modules, no framework)
+    app.js         state + controller
+    devices.js     discovery, rebinding, routing-safety rules
+    engine/        engine.js (graph), sources.js, worklets.js, meters.js, dsp.js
+    ui/            mixer strips, faders/meters, settings, presets, shortcuts, toasts
+test/          node:test suites
+```
+
+### Security
+
+The renderer runs with `contextIsolation`, `sandbox` and no Node integration. A strict Content-Security-Policy is in place. Navigation, new windows and `<webview>` are blocked, and only the media permissions are granted. Every IPC handler checks its sender and arguments.
+
+## Settings and migration
+
+Settings live in `%APPDATA%/Audio Mixer/config.json` (`config.json` in the repo folder during development). Per-source strip memory lives in `deviceStates.json`. Config **v4** is migrated automatically from v1–v3:
+
+- Linear volumes become dB.
+- `overloadGain` becomes `driveDb`.
+- Flat per-input fields become `sends`.
+- Old presets and EQ presets carry over.
 
 ## Troubleshooting
 
-- If no output is heard, verify output bus selectors are not set to `(None)`.
-- If an option is disabled, hover to see the reason (duplicate selection or cable-loop guard).
-- If devices change while the app is running, routing auto-refreshes and may rebind.
-- If packaged build behavior differs from dev, re-check `config.json` migration/version and rebuild.
-
+- **No sound:** check that each output bus has a device selected (not *(Off)*), that the input's send buttons are lit, and that nothing is muted or soloed. A pulsing **SOLO** badge appears in the header when any input is soloed.
+- **An option is greyed out:** hover it. Routing safety blocks using the same device twice and virtual-cable loops. You can turn this off in Settings.
+- **Stutters or crackles:** set Settings → Audio engine → Latency / Stability to *Stable*. For app inputs, hover the status light to see whether dropouts are happening.
+- **An app isn't listed:** it needs a visible window. Click ⟳ (or press Ctrl+R) after starting it.
+- **SmartScreen warning on install:** the installer isn't code-signed. Choose *More info → Run anyway*.
