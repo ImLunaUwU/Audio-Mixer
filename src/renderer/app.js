@@ -468,6 +468,19 @@ function buildUi() {
   $("#muteAllButton").addEventListener("click", () => ctl.toggleMuteAll());
   $("#shortcutList").replaceChildren(...SHORTCUTS.map(([keys, text]) => h("div", { class: "shortcut" }, h("kbd", {}, keys), h("span", {}, text))));
   applyLayout();
+
+  // Mark the mixer as "wrapped" when outputs drop below inputs so strips halve their
+  // height and the divider moves to the top. Re-evaluated on every resize/zoom change.
+  const mixer = $("#mixer");
+  const outputs = $(".group-outputs");
+  const inputs = $(".group-inputs");
+  const updateWrap = () => {
+    mixer.classList.remove("wrapped");
+    const wrapped = outputs.offsetTop > inputs.offsetTop + 4;
+    mixer.classList.toggle("wrapped", wrapped);
+  };
+  new ResizeObserver(updateWrap).observe(mixer);
+  updateWrap();
 }
 
 // ---------------------------------------------------------------- boot

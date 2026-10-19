@@ -83,22 +83,21 @@ select option:disabled { color: #5d6478; }
 
 /* ---------- workspace ---------- */
 .workspace { flex: 1; display: flex; min-height: 0; }
+/* Inputs and outputs are two flex groups that wrap onto a new row when the window is
+   too narrow (any size, any display scaling); the mixer scrolls if even that doesn't fit.
+   Nothing is absolutely positioned or grid-placed, so groups can never overlap. */
 .mixer {
-  flex: 1; min-width: 0;
-  display: grid;
-  grid-template-columns: auto 1px auto;
-  grid-template-rows: auto 1fr;
-  column-gap: 16px;
+  flex: 1; min-width: 0; min-height: 0;
+  display: flex; flex-wrap: wrap; align-content: flex-start; align-items: flex-start;
+  gap: 16px 0;
   padding: 12px 16px 16px;
   overflow: auto;
-  align-content: stretch;
 }
-.section-label { grid-row: 1; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); padding: 0 2px 8px; }
-.section-label:nth-of-type(2) { grid-column: 3; }
-.divider { grid-row: 1 / span 2; grid-column: 2; background: var(--border); }
-.strips { grid-row: 2; display: flex; gap: 10px; min-height: 0; }
-.strips.buses { grid-column: 3; }
-
+.group { display: flex; flex-direction: column; min-width: 0; }
+.group-outputs { padding-left: 16px; margin-left: 16px; border-left: 1px solid var(--border); }
+.mixer.wrapped .group-outputs { padding-left: 0; margin-left: 0; border-left: 0; padding-top: 12px; border-top: 1px solid var(--border); width: 100%; }
+.section-label { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); padding: 0 2px 8px; }
+.strips { display: flex; flex-wrap: wrap; gap: 10px; }
 /* ---------- strips ---------- */
 .strip {
   width: var(--strip-w);
@@ -107,7 +106,9 @@ select option:disabled { color: #5d6478; }
   background: linear-gradient(180deg, var(--surface) 0%, var(--bg-2) 100%);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  min-height: 420px;
+  /* fill the window height when everything fits on one row, never shorter than 380px */
+  height: clamp(380px, calc(100vh - 110px), 960px);
+  flex: none;
   transition: border-color .15s, box-shadow .15s, opacity .15s;
 }
 .strip.selected { border-color: rgba(183, 140, 255, .65); box-shadow: 0 0 0 1px rgba(183, 140, 255, .25), 0 8px 24px rgba(0, 0, 0, .35); }
@@ -145,7 +146,7 @@ select option:disabled { color: #5d6478; }
 .gr-readout.active { color: var(--warn); border-color: rgba(250, 204, 21, .4); }
 
 /* fader + meter */
-.strip-body { flex: 1; min-height: 160px; display: flex; gap: 8px; justify-content: center; padding: 4px 0; }
+.strip-body { flex: 1 1 0; min-height: 140px; display: flex; gap: 8px; justify-content: center; padding: 4px 0; }
 .fader { position: relative; display: flex; align-items: stretch; padding-left: 26px; }
 .fader-scale { position: absolute; left: 0; top: 9px; bottom: 9px; width: 24px; }
 .fader-scale span { position: absolute; right: 0; transform: translateY(50%); font-size: 9px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -224,14 +225,7 @@ kbd { font: 11px/1 ui-monospace, Consolas, monospace; background: var(--surface-
 .toast-error { border-color: rgba(248, 113, 113, .55); }
 
 /* ---------- responsive / compact ---------- */
-@media (max-width: 1100px) {
-  .mixer { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto; row-gap: 8px; }
-  .section-label:nth-of-type(2) { grid-column: 1; grid-row: 3; }
-  .divider { display: none; }
-  .strips { grid-row: 2; flex-wrap: wrap; }
-  .strips.buses { grid-column: 1; grid-row: 4; }
-  .strip { min-height: 360px; }
-}
+.mixer.wrapped .strip { height: clamp(420px, calc((100vh - 150px) / 2), 640px); }
 @media (max-width: 900px) {
   .preset-group select { width: 110px; }
   #muteAllButton { display: none; }
@@ -241,5 +235,6 @@ body.compact { --strip-w: 132px; font-size: 12px; }
 body.compact .sends .send-level, body.compact .sends .send-value { display: none; }
 body.compact .sends { flex-direction: row; }
 body.compact .toggle.send-toggle { flex: 1; width: auto; }
-body.compact .strip { min-height: 320px; padding: 8px; gap: 6px; }
+body.compact .strip { padding: 8px; gap: 6px; height: clamp(320px, calc(100vh - 100px), 900px); }
+body.compact .mixer.wrapped .strip { height: clamp(320px, calc((100vh - 140px) / 2), 560px); }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

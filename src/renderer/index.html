@@ -37,12 +37,15 @@
   </header>
 
   <main class="workspace">
-    <section class="mixer" aria-label="Mixer">
-      <div class="section-label">Inputs</div>
-      <div id="inputStrips" class="strips"></div>
-      <div class="divider" aria-hidden="true"></div>
-      <div class="section-label">Outputs</div>
-      <div id="busStrips" class="strips buses"></div>
+    <section id="mixer" class="mixer" aria-label="Mixer">
+      <div class="group group-inputs">
+        <div class="section-label">Inputs</div>
+        <div id="inputStrips" class="strips"></div>
+      </div>
+      <div class="group group-outputs">
+        <div class="section-label">Outputs</div>
+        <div id="busStrips" class="strips buses"></div>
+      </div>
     </section>
 
     <aside id="settingsPanel" class="panel" hidden aria-label="Settings">
