@@ -10,6 +10,7 @@ A low-latency desktop mixer for Windows. Capture microphones, line inputs **or i
 - Source: any capture device **or a running application** (per-app capture via Windows WASAPI process loopback).
 - Gain fader in dB, from -∞ to **+24 dB**.
 - Mute, Solo, Mono sum, Enable.
+- **HIDE** (app inputs): stops the app playing straight into your headphones, so you hear it only through the mixer (see *Hide from Windows*).
 - Three sends per strip (MON 1 / MON 2 / MIX), each with its own on/off and level.
 - Peak + RMS meter with peak hold and a latching clip light.
 - Each source remembers its own strip settings. Apps are remembered by exe name.
@@ -95,6 +96,19 @@ Running apps with a visible window appear in each input's **Applications** group
 - Capturing doesn't mute the app on its normal output device.
 - Apps that play audio from a windowless helper process are captured through the parent app's process tree.
 
+## Hide from Windows
+
+Capturing an app doesn't take it off its normal output, so by default you hear it twice: once directly from Windows and once through the mixer. The **HIDE** button on an app input fixes that.
+
+- **On:** the app's own Windows output is moved to a silent device (a device nobody listens to, such as a spare virtual cable). App capture follows the process, not the device, so the mixer keeps receiving it and you hear it only through MON 1 / MON 2 / MIX.
+- **Off:** the app goes back to the output it had before (usually the Windows default).
+- It does **not** mute the app. Muting an app in Windows would silence the capture too.
+- Pick the silent device in **Settings → Hide from Windows**. *Automatic* picks a virtual cable that isn't the Windows default and isn't used by any mixer bus or input. If none is found, the setting shows a warning and hidden apps keep playing normally until you pick one.
+- The state is saved per input and remembered per app (by exe name).
+- Only active while the input is enabled. Disabling the input, picking another source, quitting the mixer, or a renderer crash puts the app back. Windows remembers per-app routing even after the mixer exits, so every change is journaled in `appRouting.json` first. If the mixer itself crashes, the original routing is restored the next time it starts (or as soon as the app is running again).
+
+This uses the same per-app device setting as Windows Settings → *App volume and device preferences* (the undocumented `IAudioPolicyConfigFactory` API, like EarTrumpet), through the small native helper `bin/AppRouter.exe` (source in `native/app-router`). Some apps only pick up a device change after they restart their audio stream (pause and play, or restart the app).
+
 ## Requirements
 
 - Windows 10/11 x64
@@ -109,6 +123,8 @@ npm test             # unit tests: config migration, DSP, limiter, jitter buffer
 npm run check        # syntax check of every source file
 npm run make         # build the Squirrel installer + zip into out/make
 ```
+
+`bin/AppRouter.exe` is committed prebuilt. To rebuild it, run `native\app-router\build.cmd` from a Visual Studio x64 developer prompt, or cross-compile on Linux with clang-cl and an [xwin](https://github.com/Jake-Shadle/xwin) splat: `XWIN=/path/to/splat scripts/build-native.sh`.
 
 A headless smoke test boots the real app with a throwaway settings folder and takes a screenshot:
 
@@ -125,12 +141,16 @@ src/
     config.js      config schema + migration (pure, unit-tested)
     store.js       atomic JSON persistence
     appCapture.js  per-app capture helper management
+    appRouting.js  Hide from Windows: per-app output routing + crash-safe journal
   preload/     sandboxed bridge (window.mixerAPI)
   renderer/    UI + audio engine (ES modules, no framework)
     app.js         state + controller
     devices.js     discovery, rebinding, routing-safety rules
+    routing.js     Hide from Windows target choice (pure, unit-tested)
     engine/        engine.js (graph), sources.js, worklets.js, meters.js, dsp.js
     ui/            mixer strips, faders/meters, settings, presets, shortcuts, toasts
+native/        AppRouter.exe source (C++)
+bin/           prebuilt AppRouter.exe (shipped as resources/AppRouter.exe)
 test/          node:test suites
 ```
 
@@ -152,5 +172,8 @@ Settings live in `%APPDATA%/Audio Mixer/config.json` (`config.json` in the repo 
 - **No sound:** check that each output bus has a device selected (not *(Off)*), that the input's send buttons are lit, and that nothing is muted or soloed. A pulsing **SOLO** badge appears in the header when any input is soloed.
 - **An option is greyed out:** hover it. Routing safety blocks using the same device twice and virtual-cable loops. You can turn this off in Settings.
 - **Stutters or crackles:** set Settings → Audio engine → Latency / Stability to *Stable*. For app inputs, hover the status light to see whether dropouts are happening.
+- **HIDE is yellow or red:** hover it. Yellow means it's on but not active yet (for example the input is disabled). Red means it couldn't be applied, often because no silent device is set in Settings → Hide from Windows.
+- **A hidden app still plays in my headphones:** make sure the silent device isn't one you listen to, then pause and play in the app (some apps only switch device on a new stream).
+- **An app stayed on the silent device:** start the mixer again, it restores apps it changed. You can also reset it in Windows Settings → System → Sound → Volume mixer.
 - **An app isn't listed:** it needs a visible window. Click ⟳ (or press Ctrl+R) after starting it.
 - **SmartScreen warning on install:** the installer isn't code-signed. Choose *More info → Run anyway*.

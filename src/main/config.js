@@ -31,6 +31,7 @@ const defaultInput = () => ({
   mute: false,
   solo: false,
   forceMono: false,
+  hideFromWindows: false,
   sends: { monitor: defaultSend(), monitor2: defaultSend(), output: defaultSend() }
 });
 
@@ -50,6 +51,7 @@ const DEFAULT_CONFIG = Object.freeze({
   enforceRoutingSafety: true,
   compactMode: false,
   closeToTray: true,
+  appRouting: { targetId: "", targetLabel: "" },
   presets: [],
   window: null
 });
@@ -81,6 +83,7 @@ function normalizeInput(raw) {
     mute: bool(input.mute, false),
     solo: bool(input.solo, false),
     forceMono: !!input.forceMono,
+    hideFromWindows: bool(input.hideFromWindows, false),
     sends: {
       monitor: normalizeSend(sends.monitor, legacyMonitorVolume, input.monitorMute),
       monitor2: normalizeSend(
@@ -159,6 +162,11 @@ function normalizeWindow(raw) {
   };
 }
 
+function normalizeAppRouting(raw) {
+  const routing = raw && typeof raw === "object" ? raw : {};
+  return { targetId: str(routing.targetId).slice(0, 512), targetLabel: str(routing.targetLabel).slice(0, 200) };
+}
+
 function migrateConfig(rawConfig) {
   const raw = rawConfig && typeof rawConfig === "object" ? rawConfig : {};
   const rawInputs = Array.isArray(raw.inputs) ? raw.inputs : [];
@@ -189,6 +197,7 @@ function migrateConfig(rawConfig) {
     enforceRoutingSafety: bool(raw.enforceRoutingSafety, true),
     compactMode: bool(raw.compactMode, false),
     closeToTray: bool(raw.closeToTray, true),
+    appRouting: normalizeAppRouting(raw.appRouting),
     presets: Array.isArray(raw.presets)
       ? raw.presets
           .filter(item => item && typeof item.name === "string" && item.name.trim() && item.snapshot)

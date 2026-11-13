@@ -95,6 +95,16 @@
       </section>
 
       <section class="panel-section">
+        <h3>Hide from Windows</h3>
+        <p class="muted small">The <b>HIDE</b> button on an app input moves that app's own Windows output to the device below, so it stops playing straight into your headphones and you hear it only through the mixer. Pick a device nobody listens to, such as a spare virtual cable.</p>
+        <label class="row" title="Where hidden apps play in Windows. Automatic picks an unused virtual cable.">
+          <span>Device</span>
+          <select id="routeTarget" aria-label="Device for hidden apps"></select>
+        </label>
+        <p id="routeTargetStatus" class="route-status small" data-level="ok"></p>
+      </section>
+
+      <section class="panel-section">
         <h3>Application</h3>
         <label class="check"><input id="startOnBoot" type="checkbox"> Start with Windows (hidden in tray)</label>
         <label class="check"><input id="closeToTray" type="checkbox"> Closing the window keeps running in the tray</label>

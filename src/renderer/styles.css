@@ -136,6 +136,10 @@ select option:disabled { color: #5d6478; }
 .toggle.send-toggle[aria-pressed="true"] { background: var(--accent); border-color: transparent; }
 .strip-buttons { display: grid; grid-template-columns: 1fr 1fr 1.6fr; gap: 4px; }
 .bus-strip .strip-buttons { grid-template-columns: 1fr 1.6fr; }
+.strip-buttons:has(.hide:not([hidden])) { grid-template-columns: 1fr 1fr 1.6fr 1.5fr; }
+.toggle.hide[aria-pressed="true"] { background: var(--accent); border-color: transparent; }
+.toggle.hide[aria-pressed="true"].pending { background: transparent; color: var(--warn); border-color: rgba(250, 204, 21, .55); }
+.toggle.hide[data-state="error"] { color: var(--danger); border-color: rgba(248, 113, 113, .6); }
 
 .sends { display: flex; flex-direction: column; gap: 4px; }
 .send-row { display: flex; align-items: center; gap: 5px; }
@@ -203,6 +207,10 @@ select option:disabled { color: #5d6478; }
 .row output { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 .row select { grid-column: 2 / span 2; }
 .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.route-status { margin: 0; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); }
+.route-status[data-level="ok"] { border-color: rgba(74, 222, 128, .35); }
+.route-status[data-level="warn"] { color: var(--warn); border-color: rgba(250, 204, 21, .45); }
+.route-status[data-level="error"] { color: var(--danger); border-color: rgba(248, 113, 113, .5); }
 .eq-presets { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; gap: 4px; }
 .eq-presets select, .eq-presets input { width: 100%; }
 input[type="range"]:disabled { opacity: .35; }

@@ -36,5 +36,10 @@ contextBridge.exposeInMainWorld("mixerAPI", {
     start: pid => ipcRenderer.invoke("appAudio:start", String(pid)),
     stop: pid => ipcRenderer.send("appAudio:stop", String(pid)),
     onEnded: callback => subscribe("appAudio:ended", callback)
+  },
+  appRouting: {
+    isSupported: () => ipcRenderer.invoke("appRouting:isSupported"),
+    listOutputs: () => ipcRenderer.invoke("appRouting:listOutputs"),
+    sync: desired => ipcRenderer.invoke("appRouting:sync", desired)
   }
 });

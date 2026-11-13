@@ -7,6 +7,7 @@ export const SHORTCUTS = [
   ["S", "Solo selected input"],
   ["O", "Toggle mono on selected input"],
   ["E", "Enable / disable selected input"],
+  ["H", "Hide selected app from Windows (hear it only through the mixer)"],
   ["Shift + M", "Mute / unmute all outputs"],
   ["Ctrl + S", "Save preset"],
   ["Ctrl + 1 – 9", "Load preset 1 – 9"],
@@ -42,6 +43,7 @@ export function initShortcuts(ctl) {
     else if (key.toLowerCase() === "s") ctl.updateInput(i, { solo: !ctl.getInput(i).solo });
     else if (key.toLowerCase() === "o") ctl.updateInput(i, { forceMono: !ctl.getInput(i).forceMono });
     else if (key.toLowerCase() === "e") ctl.updateInput(i, { enabled: !ctl.getInput(i).enabled });
+    else if (key.toLowerCase() === "h") ctl.toggleHide(i);
     else if (key === ",") ctl.openSettings();
     else if (key === "?") ctl.openHelp();
     else return;

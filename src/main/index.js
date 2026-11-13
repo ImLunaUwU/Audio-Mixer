@@ -6,6 +6,7 @@ const { version, productName } = require("../../package.json");
 const { migrateConfig, migrateDeviceStates } = require("./config");
 const { readJson, createDebouncedWriter } = require("./store");
 const appCapture = require("./appCapture");
+const { createAppRouter, createNodeRunner, defaultHelperPath } = require("./appRouting");
 
 if (require("electron-squirrel-startup")) app.quit();
 
@@ -20,6 +21,11 @@ const DEVICE_STATE_PATH = path.join(DATA_DIR, "deviceStates.json");
 
 const configWriter = createDebouncedWriter(CONFIG_PATH);
 const deviceStateWriter = createDebouncedWriter(DEVICE_STATE_PATH);
+const appRouter = createAppRouter({
+  journalPath: path.join(DATA_DIR, "appRouting.json"),
+  runner: createNodeRunner(defaultHelperPath(ROOT_DIR))
+});
+let routingSynced = false;
 
 let config = migrateConfig(readJson(CONFIG_PATH, {}));
 let win = null;
@@ -117,11 +123,16 @@ function createWindow(startHidden) {
 
   const contentsId = win.webContents.id;
   // Never leak capture helpers if the renderer reloads or crashes.
+  // Hidden apps go back to their normal output whenever the renderer is not in control.
+  const releaseRenderer = () => {
+    appCapture.stopOwnedBy(contentsId);
+    if (!isQuitting) appRouter.restoreAll().catch(() => {});
+  };
   win.webContents.on("did-start-navigation", (_e, _url, isInPlace, isMainFrame) => {
-    if (isMainFrame && !isInPlace) appCapture.stopOwnedBy(contentsId);
+    if (isMainFrame && !isInPlace) releaseRenderer();
   });
-  win.webContents.on("render-process-gone", () => appCapture.stopOwnedBy(contentsId));
-  win.webContents.on("destroyed", () => appCapture.stopOwnedBy(contentsId));
+  win.webContents.on("render-process-gone", releaseRenderer);
+  win.webContents.on("destroyed", releaseRenderer);
   return win;
 }
 
@@ -225,6 +236,17 @@ function registerIpc() {
     return info;
   });
   on("appAudio:stop", (_event, rawPid) => appCapture.stop(String(rawPid ?? "")));
+
+  handle("appRouting:isSupported", () => appRouter.isSupported());
+  handle("appRouting:listOutputs", () => appRouter.listOutputs());
+  handle("appRouting:sync", (_event, desired) => {
+    routingSynced = true;
+    const items = Array.isArray(desired?.items) ? desired.items.slice(0, 16) : [];
+    return appRouter.sync({
+      targetId: typeof desired?.targetId === "string" ? desired.targetId.slice(0, 512) : "",
+      items: items.map(item => ({ exeName: String(item?.exeName ?? "").slice(0, 260), pid: String(item?.pid ?? "") }))
+    });
+  });
 }
 
 function debounce(fn, ms) {
@@ -263,6 +285,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", () => {
     isQuitting = true;
     appCapture.stopAll();
+    appRouter.restoreAllSync();
     configWriter.flush();
     deviceStateWriter.flush();
   });
@@ -273,7 +296,10 @@ if (!app.requestSingleInstanceLock()) {
     appCapture.stopAll();
     if (tray) { tray.destroy(); tray = null; }
   });
-  process.on("exit", () => appCapture.stopAll());
+  process.on("exit", () => {
+    appCapture.stopAll();
+    appRouter.restoreAllSync();
+  });
 
   app.whenReady().then(() => {
     hardenSession();
@@ -281,5 +307,7 @@ if (!app.requestSingleInstanceLock()) {
     createWindow(process.argv.includes("--hidden"));
     createTray();
     app.on("activate", () => showMainWindow());
+    // Left over from a crash and the mixer never took over again: put those apps back.
+    setTimeout(() => { if (!routingSynced) appRouter.restoreAll().catch(() => {}); }, 20000).unref?.();
   });
 }

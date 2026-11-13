@@ -70,3 +70,12 @@ test("device states migrate from old flat shape", () => {
   assert.equal(states.mic.label, "Mic");
   assert.equal(states.mic.sends.output.on, false);
 });
+
+test("hide from Windows defaults off and survives migration", () => {
+  const c = migrateConfig({ inputs: [{ deviceId: "app:1", hideFromWindows: true }, { hideFromWindows: "yes" }], appRouting: { targetId: "{x}", targetLabel: "Line 2" } });
+  assert.equal(c.inputs[0].hideFromWindows, true);
+  assert.equal(c.inputs[1].hideFromWindows, false);
+  assert.equal(c.inputs[2].hideFromWindows, false);
+  assert.deepEqual(c.appRouting, { targetId: "{x}", targetLabel: "Line 2" });
+  assert.deepEqual(migrateConfig({}).appRouting, { targetId: "", targetLabel: "" });
+});

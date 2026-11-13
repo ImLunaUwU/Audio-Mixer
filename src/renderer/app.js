@@ -9,6 +9,7 @@ import { initPresets } from "./ui/presets.js";
 import { initShortcuts, SHORTCUTS } from "./ui/shortcuts.js";
 import { toast, setStatus, reportError } from "./ui/toast.js";
 import { $, h, debounce } from "./ui/dom.js";
+import { resolveRouteTarget, buildRoutingRequest } from "./routing.js";
 
 const api = window.mixerAPI;
 const APP_POLL_MS = 5000;
@@ -28,7 +29,9 @@ const state = {
   appsSupported: false,
   selectedStrip: 0,
   stripStatus: [],
-  mutedAllSnapshot: null
+  mutedAllSnapshot: null,
+  // "Hide from Windows": silent reroute target + what the main process reported back.
+  routing: { supported: false, outputs: [], target: null, hidden: new Set(), errors: new Map(), lastRequest: "" }
 };
 
 let engine = null;
@@ -205,6 +208,7 @@ async function refreshDevices({ notify = false } = {}) {
     state.devices = devices;
     state.apps = appInfo.apps;
     state.appsSupported = appInfo.supported;
+    await refreshRouteOutputs();
     await queue(() => reconcile({ notify }));
     renderAll();
     setStatus(`${devices.inputs.length} inputs · ${devices.outputs.length} outputs · ${state.apps.length} apps`);
@@ -269,6 +273,69 @@ function updateAppPolling() {
   }
 }
 
+// ---------------------------------------------------------------- hide from Windows
+async function refreshRouteOutputs() {
+  const routing = state.routing;
+  try {
+    routing.supported = !!(await api.appRouting?.isSupported());
+    routing.outputs = routing.supported ? await api.appRouting.listOutputs() : [];
+  } catch (error) {
+    console.warn("Output list for Hide from Windows failed", error);
+    routing.outputs = [];
+  }
+  updateRouteTarget();
+}
+
+function updateRouteTarget() {
+  const c = state.config;
+  const busLabels = Object.fromEntries(BUS_IDS.map(id => [id, c.buses[id].deviceId ? c.buses[id].label : ""]));
+  const inputLabels = c.inputs.filter(cfg => cfg.deviceId && !isAppSource(cfg.deviceId)).map(cfg => cfg.label);
+  state.routing.target = resolveRouteTarget({ outputs: state.routing.outputs, busLabels, inputLabels, chosenId: c.appRouting.targetId });
+  settingsUi?.renderRouting();
+}
+
+function routeStateFor(i) {
+  const cfg = getInput(i);
+  const r = state.routing;
+  const app = isAppSource(cfg.deviceId) ? state.apps.find(a => a.deviceId === cfg.deviceId) : null;
+  const key = app?.exeName?.toLowerCase() || "";
+  return {
+    isApp: isAppSource(cfg.deviceId),
+    supported: r.supported,
+    active: !!key && r.hidden.has(key),
+    error: (key && r.errors.get(key)) || (cfg.hideFromWindows && !r.target?.id ? r.target?.warning : "") || "",
+    targetName: r.target?.name || ""
+  };
+}
+
+const syncRouting = debounce(async () => {
+  const r = state.routing;
+  if (!r.supported || !state.config) return;
+  updateRouteTarget();
+  const request = buildRoutingRequest({ inputs: state.config.inputs, apps: state.apps, targetId: r.target?.id || "" });
+  const key = JSON.stringify(request);
+  if (key === r.lastRequest) return;
+  r.lastRequest = key;
+  try {
+    const result = await api.appRouting.sync(request);
+    r.hidden = new Set(result?.hidden || []);
+    const errors = new Map((result?.errors || []).map(e => [String(e.exeName || "").toLowerCase(), e.message]));
+    errors.forEach((message, exe) => {
+      if (r.errors.get(exe) !== message) toast(`Hide from Windows${exe ? ` (${exe})` : ""}: ${message}`, "error", 6000);
+    });
+    r.errors = errors;
+    if (errors.size) r.lastRequest = ""; // try again on the next change or poll
+  } catch (error) {
+    r.lastRequest = "";
+    reportError("Hide from Windows", error, "Could not change the app's Windows output");
+  }
+  renderStripsOnly();
+}, 250);
+
+function renderStripsOnly() {
+  inputStrips.forEach((strip, i) => strip.updateRoute(routeStateFor(i)));
+}
+
 // ---------------------------------------------------------------- controller
 const ctl = {
   state,
@@ -288,8 +355,8 @@ const ctl = {
     cfg.label = source ? source.label : "";
     const remembered = state.deviceStates[stateKey(cfg)];
     if (remembered) {
-      const { gainDb, mute, solo, forceMono, sends } = remembered;
-      Object.assign(cfg, { gainDb, mute, solo, forceMono, sends: JSON.parse(JSON.stringify(sends)) });
+      const { gainDb, mute, solo, forceMono, sends, hideFromWindows } = remembered;
+      Object.assign(cfg, { gainDb, mute, solo, forceMono, hideFromWindows: !!hideFromWindows, sends: JSON.parse(JSON.stringify(sends)) });
     }
     await queue(() => connectInput(i));
     save();
@@ -309,6 +376,35 @@ const ctl = {
     if (!("gainDb" in patch) || Object.keys(patch).length > 1) renderAll();
     else inputStrips[i].fader.set(cfg.gainDb);
   },
+
+  toggleHide(i) {
+    const cfg = getInput(i);
+    if (!cfg || !isAppSource(cfg.deviceId)) return;
+    const next = !cfg.hideFromWindows;
+    if (next && !state.routing.supported) {
+      toast("Hide from Windows is not available on this system.", "error");
+      renderAll();
+      return;
+    }
+    ctl.updateInput(i, { hideFromWindows: next });
+    if (next && !state.routing.target?.id) {
+      toast(state.routing.target?.warning || "Pick a device for hidden apps in Settings.", "error", 7000);
+    } else if (next) {
+      toast(`${cfg.label}: hidden from Windows. It now plays to ${state.routing.target.name}, and you hear it through the mixer.`, "success", 5000);
+    } else {
+      toast(`${cfg.label}: back on its normal Windows output.`, "info");
+    }
+  },
+
+  setRouteTarget(id) {
+    const output = state.routing.outputs.find(d => d.id === id);
+    state.config.appRouting = { targetId: output ? output.id : "", targetLabel: output ? output.name : "" };
+    save();
+    updateRouteTarget();
+    renderAll();
+  },
+
+  refreshRouteOutputs: async () => { await refreshRouteOutputs(); renderAll(); },
 
   updateSend(i, busId, patch) {
     Object.assign(getInput(i).sends[busId], patch);
@@ -415,6 +511,8 @@ function renderAll() {
     selected: state.selectedStrip === i
   }));
   BUS_IDS.forEach(id => busStrips[id].update({ outputs: state.devices.outputs, disabled: disabled.buses[id], bus: c.buses[id] }));
+  renderStripsOnly();
+  syncRouting();
   const solo = c.inputs.some(cfg => cfg.solo && cfg.enabled);
   $("#soloIndicator").hidden = !solo;
 }

@@ -3,7 +3,7 @@ const { version } = require("./package.json");
 module.exports = {
     name: "Audio Mixer",
     version: `${version}`,
-  description: "Desktop audio routing and mixing app.",
+  description: "Desktop audio routing and mixing app with per-application capture.",
     author: "Luna",
     main: "main.js",
   productName: "Audio Mixer",
@@ -28,8 +28,13 @@ module.exports = {
       asar: {
         unpack: "{**/*.json,**/application-loopback/bin/**}"
       },
+      // Native routing helper for "Hide from Windows" (resources/AppRouter.exe).
+      extraResource: ["./bin/AppRouter.exe"],
       ignore: [
         /^\/config\.json$/,
+        /^\/appRouting\.json$/,
+        /^\/bin($|\/)/,
+        /^\/native($|\/)/,
         /^\/deviceStates\.json$/,
         /^\/test($|\/)/,
         /^\/scripts($|\/)/,

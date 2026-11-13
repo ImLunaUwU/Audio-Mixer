@@ -122,12 +122,43 @@ export function initSettings(ctl) {
     renderAll();
   });
 
+  // Hide from Windows: silent device for hidden apps (Windows endpoint ids from AppRouter.exe).
+  const routeTarget = $("#routeTarget");
+  const routeStatus = $("#routeTargetStatus");
+  routeTarget.addEventListener("change", () => ctl.setRouteTarget(routeTarget.value));
+  function renderRouting() {
+    const routing = ctl.state.routing;
+    const chosen = c().appRouting;
+    const options = [h("option", { value: "" }, "Automatic (unused virtual cable)")];
+    routing.outputs.forEach(device => options.push(h("option", { value: device.id, title: device.name }, device.isDefault ? `${device.name} (Windows default)` : device.name)));
+    if (chosen.targetId && !routing.outputs.some(d => d.id === chosen.targetId)) {
+      options.push(h("option", { value: chosen.targetId, disabled: true }, `${chosen.targetLabel || "Saved device"} (not connected)`));
+    }
+    if (document.activeElement !== routeTarget) {
+      routeTarget.replaceChildren(...options);
+      routeTarget.value = chosen.targetId || "";
+    }
+    const target = routing.target;
+    let level = "ok";
+    let text;
+    if (!routing.supported) { level = "warn"; text = "Only available in the Windows app."; }
+    else if (!target) text = "Checking output devices...";
+    else if (!target.id) { level = "error"; text = target.warning; }
+    else {
+      level = target.level;
+      text = `Hidden apps play to ${target.name}${target.auto ? " (picked automatically)" : ""}.${target.warning ? ` Warning: ${target.warning}` : ""}`;
+    }
+    routeStatus.dataset.level = level;
+    routeStatus.textContent = text;
+  }
+
   function renderAll() {
     renders.forEach(fn => fn());
+    renderRouting();
     $("#softClipThreshold").disabled = !c().softClip.enabled;
     $("#limiterCeiling").disabled = !c().limiter.enabled;
     renderEqPresets();
   }
   renderAll();
-  return { render: renderAll };
+  return { render: renderAll, renderRouting };
 }
