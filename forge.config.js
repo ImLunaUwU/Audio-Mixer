@@ -3,7 +3,7 @@ const { version } = require("./package.json");
 module.exports = {
     name: "Audio Mixer",
     version: `${version}`,
-  description: "Desktop audio routing and mixing app.",
+  description: "Desktop audio routing and mixing app with per-application capture.",
     author: "Luna",
     main: "main.js",
   productName: "Audio Mixer",
@@ -26,10 +26,20 @@ module.exports = {
         LegalCopyright: "Copyright (c) 2026 Luna. All rights reserved."
       },
       asar: {
-        unpack: "**/*.json"
+        unpack: "{**/*.json,**/application-loopback/bin/**}"
       },
+      // Native routing helper for "Hide from Windows" (resources/AppRouter.exe).
+      extraResource: ["./bin/AppRouter.exe"],
       ignore: [
-        "config.json"
+        /^\/config\.json$/,
+        /^\/appRouting\.json$/,
+        /^\/bin($|\/)/,
+        /^\/native($|\/)/,
+        /^\/deviceStates\.json$/,
+        /^\/test($|\/)/,
+        /^\/scripts($|\/)/,
+        /^\/out($|\/)/,
+        /^\/\.github($|\/)/
       ]
     },
     rebuildConfig: {},
@@ -65,7 +75,7 @@ module.exports = {
       appId: "dev.imluna.audio-mixer",
       productName: "Audio Mixer",
       asar: {
-        unpack: "**/*.json"
+        unpack: "{**/*.json,**/application-loopback/bin/**}"
       },
       files: [
         "**/*",
