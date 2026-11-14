@@ -2,8 +2,7 @@
 //!
 //!  Strip (per input, same for devices and applications):
 //!    source -> [stereo | mono sum] -> trim (dB, up to +24) -> mute/solo -> meter tap
-//!           -> send[MON 1 | MON 2] -> bus sum
-//!           -> sync delay (karaoke alignment, see `sync`) -> send[MIX] -> bus sum
+//!           -> send[MON 1 | MON 2 | MIX] -> bus sum
 //!  Bus (per output):
 //!    sum -> EQ low/mid/high -> drive -> fader -> soft clipper (optional)
 //!        -> lookahead limiter (optional, -1 dB default) -> meter tap -> device
@@ -11,9 +10,7 @@
 //! Every gain goes through a one-pole smoother (15 ms), so no parameter change clicks.
 
 use super::state::{MasterParams, MixParams, BUS_COUNT};
-use super::sync::{self, SourceKind, SyncStrip, ALIGN_BUS, MONITOR_BUSES};
 use crate::dsp::biquad::{Biquad, Coefs, EQ_BANDS};
-use crate::dsp::delay::DelayLine;
 use crate::dsp::jitter::{AdaptiveRing, JitterStats};
 use crate::dsp::limiter::Limiter;
 use crate::dsp::meter::LevelAccum;
@@ -24,6 +21,15 @@ use crate::dsp::{db_to_gain, Smoother};
 pub const MAX_BLOCK: usize = 1024;
 
 pub type SourceKey = u64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SourceKind {
+    /// A capture endpoint: microphone, line in, virtual cable.
+    #[default]
+    Device,
+    /// Process loopback of an application.
+    App,
+}
 
 /// One input source (device or app) as seen by the mixer: a jitter buffer fed by the
 /// capture thread through a lock-free ring.
@@ -45,15 +51,6 @@ impl SourceSlot {
     pub fn with_kind(mut self, kind: SourceKind) -> Self {
         self.kind = kind;
         self
-    }
-
-    /// Capture + jitter buffer time (ms) from the sound happening to it reaching the mix.
-    pub fn input_ms(&self, rate: f32) -> f64 {
-        let capture = match self.kind {
-            SourceKind::Device => sync::DEVICE_CAPTURE_MS,
-            SourceKind::App => sync::APP_CAPTURE_MS,
-        };
-        capture + self.ring.target() as f64 / rate as f64 * 1000.0
     }
 
     fn drain_feed(&mut self) {
@@ -88,9 +85,6 @@ struct StripState {
     mute: Smoother,
     sends: [Smoother; BUS_COUNT],
     level: LevelAccum,
-    /// Karaoke sync delay on the MIX send.
-    delay: DelayLine,
-    delay_ms: f64,
 }
 
 struct BusState {
@@ -112,9 +106,6 @@ pub struct MeterData {
     pub buses: [LevelAccum; BUS_COUNT],
     pub bus_gr_db: [f32; BUS_COUNT],
     pub sources: Vec<(SourceKey, JitterStats)>,
-    /// Karaoke sync: current delay per strip on MIX (ms) and whether auto alignment is engaged.
-    pub sync_ms: Vec<f32>,
-    pub sync_auto: bool,
 }
 
 impl MeterData {
@@ -131,9 +122,6 @@ impl MeterData {
         }
         self.sources.clear();
         self.sources.extend_from_slice(&other.sources);
-        self.sync_ms.clear();
-        self.sync_ms.extend_from_slice(&other.sync_ms);
-        self.sync_auto = other.sync_auto;
     }
 }
 
@@ -144,8 +132,6 @@ pub struct Mixer {
     buses: Vec<BusState>,
     pub sources: Vec<SourceSlot>,
     pub meters: MeterData,
-    /// Output latency (ms) per bus: device to ears. None = bus not playing.
-    bus_out_ms: [Option<f64>; BUS_COUNT],
 }
 
 impl Mixer {
@@ -158,8 +144,6 @@ impl Mixer {
                 mute: Smoother::new(0.0, tc, rate),
                 sends: std::array::from_fn(|_| Smoother::new(0.0, tc, rate)),
                 level: LevelAccum::default(),
-                delay: DelayLine::new((rate as f64 * sync::MAX_DELAY_MS / 1000.0).ceil() as usize),
-                delay_ms: 0.0,
             })
             .collect();
         let buses = (0..BUS_COUNT)
@@ -181,8 +165,7 @@ impl Mixer {
             strips,
             buses,
             sources: Vec::new(),
-            meters: MeterData { strips: vec![LevelAccum::default(); strip_count], sync_ms: vec![0.0; strip_count], ..Default::default() },
-            bus_out_ms: [None; BUS_COUNT],
+            meters: MeterData { strips: vec![LevelAccum::default(); strip_count], ..Default::default() },
         };
         mixer.apply_master(&MasterParams::default());
         mixer
@@ -190,52 +173,6 @@ impl Mixer {
 
     pub fn rate(&self) -> f32 {
         self.rate
-    }
-
-    /// Output latency per bus (ms), set by the engine from the open render streams.
-    pub fn set_bus_latency(&mut self, out_ms: [Option<f64>; BUS_COUNT]) {
-        self.bus_out_ms = out_ms;
-    }
-
-    /// The sync model's view of every strip that is live on MIX.
-    fn sync_strips(&self) -> Vec<Option<SyncStrip>> {
-        self.params
-            .strips
-            .iter()
-            .map(|p| {
-                let key = p.source?;
-                if !p.audible || p.sends[ALIGN_BUS] <= 0.0 {
-                    return None;
-                }
-                let src = self.sources.iter().find(|s| s.key == key)?;
-                let heard_ms = match src.kind {
-                    SourceKind::App => MONITOR_BUSES.iter().find(|&&b| p.sends[b] > 0.0 && self.bus_out_ms[b].is_some()).and_then(|&b| self.bus_out_ms[b]),
-                    SourceKind::Device => None,
-                };
-                Some(SyncStrip { kind: src.kind, input_ms: src.input_ms(self.rate), heard_ms, offset_ms: p.sync_offset_ms as f64 })
-            })
-            .collect()
-    }
-
-    /// Recompute the MIX delays (cheap; done every block so buffer changes follow).
-    fn update_sync(&mut self) {
-        let strips = self.sync_strips();
-        let delays = sync::align(&strips, self.params.auto_sync);
-        self.meters.sync_auto = self.params.auto_sync && sync::auto_applies(&strips);
-        self.meters.sync_ms.resize(self.strips.len(), 0.0);
-        for (i, (strip, ms)) in self.strips.iter_mut().zip(delays).enumerate() {
-            let ms = ms.round();
-            if ms != strip.delay_ms {
-                strip.delay_ms = ms;
-                strip.delay.set_delay((ms * self.rate as f64 / 1000.0).round() as usize);
-            }
-            self.meters.sync_ms[i] = ms as f32;
-        }
-    }
-
-    /// Current MIX delay per strip (ms).
-    pub fn sync_delays_ms(&self) -> Vec<f64> {
-        self.strips.iter().map(|s| s.delay_ms).collect()
     }
 
     pub fn set_params(&mut self, params: MixParams) {
@@ -321,24 +258,15 @@ impl Mixer {
             bus.l[..n].fill(0.0);
             bus.r[..n].fill(0.0);
         }
-        self.update_sync();
 
         // strips -> bus sums
         for (si, strip) in self.strips.iter_mut().enumerate() {
             let Some(key) = self.params.strips[si].source else {
-                // keep smoothers moving toward silence, and the delay line flushing
+                // keep smoothers moving toward silence
                 strip.mute.snap();
-                for _ in 0..n {
-                    strip.delay.process(0.0, 0.0);
-                }
                 continue;
             };
-            let Some(src) = self.sources.iter_mut().find(|s| s.key == key) else {
-                for _ in 0..n {
-                    strip.delay.process(0.0, 0.0);
-                }
-                continue;
-            };
+            let Some(src) = self.sources.iter_mut().find(|s| s.key == key) else { continue };
             if !src.pulled {
                 let (l, r) = (&mut src.l[..n], &mut src.r[..n]);
                 src.ring.pull(l, r);
@@ -357,13 +285,11 @@ impl Mixer {
                 l *= g;
                 r *= g;
                 strip.level.add(l, r);
-                let (dl, dr) = strip.delay.process(l, r);
                 for (b, bus) in self.buses.iter_mut().enumerate() {
                     let s = strip.sends[b].next();
                     if s != 0.0 {
-                        let (xl, xr) = if b == ALIGN_BUS { (dl, dr) } else { (l, r) };
-                        bus.l[i] += xl * s;
-                        bus.r[i] += xr * s;
+                        bus.l[i] += l * s;
+                        bus.r[i] += r * s;
                     }
                 }
             }
@@ -445,12 +371,11 @@ mod tests {
             strips,
             buses: [BusParams { volume: 1.0 }, BusParams { volume: 1.0 }, BusParams { volume: 1.0 }],
             master: MasterParams { soft_clip: false, limiter: false, ..MasterParams::default() },
-            auto_sync: true,
         }
     }
 
     fn strip(source: SourceKey, gain_db: f32, sends: [f32; 3]) -> StripParams {
-        StripParams { source: Some(source), gain: db_to_gain(gain_db), audible: true, mono: false, sends, sync_offset_ms: 0.0 }
+        StripParams { source: Some(source), gain: db_to_gain(gain_db), audible: true, mono: false, sends }
     }
 
     /// Feed `frames` of audio per source through the mixer in 480-frame blocks and return
@@ -587,87 +512,5 @@ mod tests {
         assert!((bus_peak - (-6.02)).abs() < 0.1);
         assert_eq!(snap.buses[1].levels_db().0, f32::NEG_INFINITY);
         assert_eq!(snap.sources.len(), 1);
-    }
-
-    /// Index of the first sample whose magnitude exceeds `thr`.
-    fn onset(x: &[f32], thr: f32) -> Option<usize> {
-        x.iter().position(|v| v.abs() > thr)
-    }
-
-    /// One click per source at the same instant; returns every bus's left channel.
-    fn click_run(m: &mut Mixer, p_app: &mut rtrb::Producer<f32>, p_mic: &mut rtrb::Producer<f32>) -> [Vec<f32>; 3] {
-        let block = 480;
-        let mut out: [Vec<f32>; 3] = Default::default();
-        for k in 0..150 {
-            for p in [&mut *p_app, &mut *p_mic] {
-                for i in 0..block {
-                    let x = if k == 50 && i == 0 { 0.9 } else { 0.0 };
-                    let _ = p.push(x);
-                    let _ = p.push(x);
-                }
-            }
-            m.process(block);
-            for (b, o) in out.iter_mut().enumerate() {
-                o.extend_from_slice(m.bus_output(b, block).0);
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn karaoke_sync_delays_music_on_mix_only() {
-        let mut m = Mixer::new(FS, 3);
-        let (mut pa, ca) = rtrb::RingBuffer::new(96_000);
-        let (mut pm, cm) = rtrb::RingBuffer::new(96_000);
-        // same jitter target for both so their inputs line up before any sync
-        m.add_source(SourceSlot::new(1, AdaptiveRing::new(48_000.0, 48_000.0, 20.0, 15.0), Some(ca)).with_kind(SourceKind::App));
-        m.add_source(SourceSlot::new(2, AdaptiveRing::new(48_000.0, 48_000.0, 20.0, 15.0), Some(cm)));
-        // music on MON 1 + MIX, mic on MON 2 + MIX (so each monitor bus shows one source)
-        m.set_params(params(vec![strip(1, 0.0, [1.0, 0.0, 1.0]), strip(2, 0.0, [0.0, 1.0, 1.0]), StripParams::default()]));
-        m.set_bus_latency([Some(25.0), Some(25.0), Some(10.0)]);
-        let out = click_run(&mut m, &mut pa, &mut pm);
-        // heard after 25 ms on MON 1, mic input = 10 + 20 ms: music held back 55 ms on MIX
-        assert_eq!(m.sync_delays_ms(), vec![55.0, 0.0, 0.0]);
-        assert!(m.meters.sync_auto);
-        let music_mon = onset(&out[0], 0.5).unwrap();
-        let mic_mon = onset(&out[1], 0.5).unwrap();
-        assert_eq!(music_mon, mic_mon, "no delay on monitor buses");
-        // MIX has the mic click right away and the music click 55 ms later
-        let first = onset(&out[2], 0.5).unwrap();
-        assert_eq!(first, mic_mon);
-        let second = first + 100 + onset(&out[2][first + 100..], 0.5).unwrap();
-        assert_eq!(second - first, 55 * 48);
-    }
-
-    #[test]
-    fn karaoke_sync_off_and_manual_offset() {
-        let mut m = Mixer::new(FS, 3);
-        let (_pa, ca) = rtrb::RingBuffer::new(96_000);
-        let (_pm, cm) = rtrb::RingBuffer::new(96_000);
-        m.add_source(SourceSlot::new(1, AdaptiveRing::new(48_000.0, 48_000.0, 20.0, 15.0), Some(ca)).with_kind(SourceKind::App));
-        m.add_source(SourceSlot::new(2, AdaptiveRing::new(48_000.0, 48_000.0, 10.0, 10.0), Some(cm)));
-        m.set_bus_latency([Some(25.0), None, Some(10.0)]);
-        let mut p = params(vec![strip(1, 0.0, [1.0, 0.0, 1.0]), strip(2, 0.0, [1.0, 0.0, 1.0]), StripParams::default()]);
-        p.auto_sync = false;
-        m.set_params(p.clone());
-        m.process(480);
-        assert_eq!(m.sync_delays_ms(), vec![0.0, 0.0, 0.0]);
-        // manual: mic 12 ms later
-        p.strips[1].sync_offset_ms = 12.0;
-        m.set_params(p.clone());
-        m.process(480);
-        assert_eq!(m.sync_delays_ms(), vec![0.0, 12.0, 0.0]);
-        // auto on: 25 + (10 + 10) = 45 on the music; the mic's +12 offset moves the mic
-        // 12 ms later relative to the music, so the music needs 12 ms less
-        p.auto_sync = true;
-        m.set_params(p.clone());
-        m.process(480);
-        assert_eq!(m.sync_delays_ms(), vec![33.0, 0.0, 0.0]);
-        // mic not on MIX: nothing to align
-        p.strips[1].sends[2] = 0.0;
-        m.set_params(p);
-        m.process(480);
-        assert_eq!(m.sync_delays_ms(), vec![0.0, 0.0, 0.0]);
-        assert!(!m.meters.sync_auto);
     }
 }

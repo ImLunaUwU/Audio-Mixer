@@ -1,12 +1,10 @@
 # Luna's Audio Mixer
 
-> Heads up: I turned this into vibecoded crap for better performance. Honestly I don't really care about it much anymore, I originally made it for an ex who hated Voicemeeter.
+> **A note from Luna:** I originally built this for an ex who hated Voicemeeter. I don't really care about it much anymore, so I let AI rewrite it in Rust (yes, it's vibecoded now). The upside is that it's a lot faster and lighter than before.
 
 A low-latency desktop mixer for Windows. Capture microphones, line inputs **or individual applications**, mix them on channel strips and route the result to up to three output devices (e.g. headphones, speakers and a virtual cable for streaming).
 
-Version 2 runs on **Tauri** with the whole audio engine in **Rust** (WASAPI capture, process loopback and render, 32-bit float mixing). The UI is the same web UI as before, shown in WebView2.
-
-![Mixer](assets/screenshot.png)
+Version 2 is a rewrite on **Tauri 2** with the whole audio engine in **Rust** (WASAPI capture, process loopback and render, 32-bit float mixing). The UI is a plain web UI shown in WebView2, so the installer is under 2 MB instead of the old ~110 MB Electron build, and it starts on the lowest-latency profile by default.
 
 ## Features
 
@@ -57,31 +55,23 @@ The engine runs at 48 kHz in 32-bit float. WASAPI converts other device rates in
 
 ## Stutter-free playback
 
-- **Real audio threads.** Capture, mixing and output each run on their own native thread (MMCSS "Pro Audio" priority on Windows), connected by lock-free ring buffers. The UI only sends parameter changes and receives meters (about 30 per second), so UI work can never stall audio.
+- **Real audio threads.** Capture, mixing and output each run on their own native thread (time-critical priority on Windows), connected by lock-free ring buffers. The UI only sends parameter changes and receives meters (about 30 per second), so UI work can never stall audio.
 - **Fewer clock domains.** The first active output drives the mixer on its own device clock. Only the extra outputs get an adaptive buffer.
 - **Adaptive jitter buffer** on every input and every extra output. It plays after about 20, 40, 60 or 100 ms of audio is buffered, depending on the Latency / Stability profile.
   - **Dropouts:** after a dropout, the target grows x1.5, up to 400 ms. After 20 s without a dropout, it slowly shrinks back.
   - **Quiet gaps are not dropouts.** An app that pauses or stops sending audio is shown as a *quiet gap* and doesn't grow the buffer.
   - **Clock drift** between devices is absorbed by nudging the playback rate (at most +/-0.5 %, inaudible, cubic interpolation).
   - **Fades:** dropouts fade out and resume with a 5 ms fade-in.
-- **Latency / Stability setting** (Settings > Audio engine):
+- **Latency / Stability setting** (Settings > Audio engine). **Ultra low** is the default. Mics and lines get a smaller buffer than apps because capture devices deliver on a steady clock, while process loopback is burstier. Every buffer still grows on its own after a dropout, so start low and only step up if you keep hearing crackles.
 
 | Profile | Input buffer | Extra outputs | WASAPI buffer |
 | --- | --- | --- | --- |
-| Ultra low | apps ~20 ms (min 15), mics/lines ~10 ms | ~15 ms | 10 ms |
-| Low latency | ~40 ms (min 25) | ~25 ms | 10 ms |
-| Balanced (default) | ~60 ms (min 40) | ~40 ms | 20 ms |
-| Stable | ~100 ms (min 70) | ~60 ms | 40 ms |
+| Ultra low (default) | apps ~20 ms (min 15), mics/lines ~10 ms | ~15 ms | 10 ms |
+| Low latency | apps ~40 ms (min 25), mics/lines ~20 ms | ~25 ms | 10 ms |
+| Balanced | apps ~60 ms (min 40), mics/lines ~30 ms | ~40 ms | 20 ms |
+| Stable | apps ~100 ms (min 70), mics/lines ~60 ms | ~60 ms | 40 ms |
 
-Hover an app input's status light to see its live buffer level, dropout count and drift correction.
-
-## Karaoke sync
-
-Sing over Spotify (or any app) and have your stream hear you in time with the music.
-
-When you sing along, you follow the music as you hear it in your headphones, and your voice then needs a moment to come back in through the mic. So on the MIX output the voice would trail the music by (headphone output latency + mic input latency). With **Karaoke sync** on (Settings > Audio engine, on by default), the engine measures both from its own buffers and holds the app back by that amount **on MIX only**. MON 1 and MON 2 are never delayed, so what you hear stays as fast as possible. It only kicks in when an app and a mic or line are both sent to MIX.
-
-Each input has a **SYNC** slider (ms, MIX only, double-click for 0) to fine-tune things the engine cannot measure, such as Bluetooth headphones. If you sound late against the music on your stream, raise the app's SYNC; if early, lower it (or raise the mic's). Hover the slider to see the delay applied right now.
+Hover an input's status light to see its live buffer level, dropout count and drift correction.
 
 ## Keyboard shortcuts
 
@@ -121,22 +111,32 @@ Capturing an app doesn't take it off its normal output, so by default you hear i
 - **Off:** the app goes back to the output it had before (usually the Windows default).
 - It does **not** mute the app. Muting an app in Windows would silence the capture too.
 - The state is saved per input and remembered per app (by exe name).
-- Only active while the input is enabled. Disabling the input, picking another source, quitting the mixer, or a renderer crash puts the app back. Windows remembers per-app routing even after the mixer exits, so every change is journaled in `dumpRouting.json` first. If the mixer itself crashes, the original routing is restored the next time it starts (or as soon as the app is running again). A journal left by an early 2.0 build (`appRouting.json`) is picked up and restored too.
+- Only active while the input is enabled. Disabling the input, picking another source or quitting the mixer puts the app back. Windows remembers per-app routing even after the mixer exits, so every change is journaled in `dumpRouting.json` first. If the mixer itself crashes, the original routing is restored the next time it starts (or as soon as the app is running again). A journal left by an early 2.0 build (`appRouting.json`) is picked up and restored too.
 
 This uses the same per-app device setting as Windows Settings > *App volume and device preferences* (the undocumented `IAudioPolicyConfigFactory` API, like EarTrumpet), called directly from Rust (`src-tauri/src/dump/policy.rs`), no helper exe. Some apps only pick up a device change after they restart their audio stream (pause and play, or restart the app).
 
+## Install
+
+Download `Audio.Mixer_2.0.0_x64-setup.exe` from the [latest release](https://github.com/ImLunaUwU/Audio-Mixer/releases/latest) and run it. It installs per user (no admin needed). If WebView2 is missing (rare, it ships with Windows 11 and current Windows 10), the installer downloads it.
+
 ## Requirements
 
-- Windows 10/11 x64
+- Windows 10 or 11, x64. Per-app capture and DUMP need **Windows 10 2004 (build 19041) or newer**.
+- Microsoft Edge WebView2 Runtime (installed automatically if missing).
 - Optional: a virtual audio cable (e.g. VB-CABLE) to send the Mixed Output to OBS, Discord, etc.
 
 ## Building
 
-You need Node.js 20+, Rust (stable, MSVC toolchain on Windows), the Visual Studio 2022 "Desktop development with C++" workload and WebView2 (already part of Windows 11).
+On Windows you need:
+
+- Node.js 20+ and npm
+- Rust (stable, `x86_64-pc-windows-msvc` toolchain, via [rustup](https://rustup.rs))
+- Visual Studio 2022 Build Tools with the **Desktop development with C++** workload (MSVC linker and Windows SDK)
+- WebView2 Runtime (already part of Windows 11)
 
 ```sh
 npm ci
-npm test             # JS tests (config migration, DSP, DUMP, device rebinding) + Rust tests (mixer, DSP, jitter buffer, DUMP journal, settings)
+npm test             # JS tests (config migration, latency presets, DSP, DUMP, device rebinding) + Rust tests (mixer, DSP, jitter buffer, latency profiles, DUMP journal, settings)
 npm run check        # syntax check of every JS file
 npm run dev          # run in development
 npx tauri build      # release build + NSIS installer
@@ -151,7 +151,7 @@ On Linux the app builds and runs with a demo audio backend (fake devices and app
 ```
 src-tauri/     Tauri app (Rust)
   src/lib.rs       window, tray, commands, events, lifecycle
-  src/store.rs     atomic JSON persistence + Electron settings migration
+  src/store.rs     atomic JSON persistence + one-time import of 1.x settings
   src/engine/      mixer, engine threads, latency profiles, engine state
   src/dsp/         biquad EQ, soft clip, limiter, meters, adaptive jitter buffer
   src/platform/    WASAPI backend (Windows), demo backend (other platforms)
@@ -173,18 +173,21 @@ The UI has no Node or file access. It can only call the app's own commands, a st
 
 ## Settings and migration
 
-Settings live in `%APPDATA%/dev.imluna.audio-mixer/config.json`. Per-source strip memory lives in `deviceStates.json`. On first start, settings, strip memory and the DUMP journal are copied over from the Electron version (`%APPDATA%/Audio Mixer`). Devices are matched by name, since Windows endpoint ids differ from the old Chromium ids. Uninstall the old Electron version from Windows Settings > Apps. Config **v4** is migrated automatically from v1–v3:
+Settings live in `%APPDATA%\dev.imluna.audio-mixer\config.json`. Per-source strip memory lives in `deviceStates.json` and the DUMP journal in `dumpRouting.json`, in the same folder.
 
-- Linear volumes become dB.
-- `overloadGain` becomes `driveDb`.
-- Flat per-input fields become `sends`.
-- Old presets and EQ presets carry over.
+**Coming from 1.x:** on first start, settings, strip memory and the DUMP journal are copied over once from the 1.x app's folder (`%APPDATA%\Audio Mixer`). Devices are matched by name, since Windows endpoint ids differ from the old ids. The old files are left untouched. Uninstall 1.x from Windows Settings > Apps afterwards.
+
+Config **v5** is migrated automatically from every earlier version:
+
+- v1 to v3: linear volumes become dB, `overloadGain` becomes `driveDb`, flat per-input fields become `sends`, old presets and EQ presets carry over.
+- v4 to v5: configs still on the old default latency (Balanced) move to Ultra low. An explicit Low latency or Stable choice is kept.
+- Unknown or leftover keys are ignored.
 
 ## Troubleshooting
 
 - **No sound:** check that each output bus has a device selected (not *(Off)*), that the input's send buttons are lit, and that nothing is muted or soloed. A pulsing **SOLO** badge appears in the header when any input is soloed.
 - **An option is greyed out:** hover it. Routing safety blocks using the same device twice and virtual-cable loops. You can turn this off in Settings.
-- **Stutters or crackles:** set Settings > Audio engine > Latency / Stability to *Stable*. For app inputs, hover the status light to see whether dropouts are happening.
+- **Stutters or crackles:** the buffers grow by themselves after a dropout. If it keeps happening, step Settings > Audio engine > Latency / Stability up to *Low latency*, *Balanced* or *Stable*. Hover an input's status light to see whether dropouts are happening.
 - **DUMP is yellow or red:** hover it. Yellow means it's on but not active yet (for example the input is disabled). Red means it couldn't be applied, often because the dump device isn't connected.
 - **A dumped app still plays in my headphones:** make sure the dump device isn't one you listen to (Settings shows a warning if it is), then pause and play in the app (some apps only switch device on a new stream).
 - **An app stayed on the dump device:** start the mixer again, it restores apps it changed. You can also reset it in Windows Settings > System > Sound > Volume mixer.

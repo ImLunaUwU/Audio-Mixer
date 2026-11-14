@@ -126,10 +126,8 @@ impl Backend for WasapiBackend {
         client.initialize_client(&engine_format(), Direction::Render, mode, None).map_err(|e| describe(&e))?;
         let event = client.set_get_eventhandle().map_err(|e| describe(&e))?;
         let render = client.get_audiorenderclient().map_err(|e| describe(&e))?;
-        // The mixer keeps the device buffer full, so a frame waits about one buffer.
-        let latency_ms = client.get_buffer_size().ok().filter(|f| *f > 0).map(|f| f as f64 / RATE as f64 * 1000.0);
         client.start_stream().map_err(|e| describe(&e))?;
-        Ok(Box::new(WasapiRender { client, render, event, bytes: Vec::new(), timeouts: 0, latency_ms }))
+        Ok(Box::new(WasapiRender { client, render, event, bytes: Vec::new(), timeouts: 0 }))
     }
 }
 
@@ -139,7 +137,6 @@ struct WasapiRender {
     event: Handle,
     bytes: Vec<u8>,
     timeouts: u32,
-    latency_ms: Option<f64>,
 }
 
 impl RenderStream for WasapiRender {
@@ -169,10 +166,6 @@ impl RenderStream for WasapiRender {
             self.bytes.extend_from_slice(&s.to_le_bytes());
         }
         self.render.write_to_device(&self.bytes, None).map_err(|e| describe(&e))
-    }
-
-    fn latency_ms(&self) -> Option<f64> {
-        self.latency_ms
     }
 }
 

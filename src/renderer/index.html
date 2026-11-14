@@ -84,14 +84,12 @@
           <span>Latency</span>
           <select id="latencyHint" aria-label="Latency / Stability">
             <option value="ultra">Ultra low (~20 ms apps, ~10 ms mics)</option>
-            <option value="interactive">Low latency (~40 ms apps)</option>
-            <option value="balanced">Balanced (~60 ms apps)</option>
-            <option value="playback">Stable (~100 ms apps)</option>
+            <option value="interactive">Low latency (~40 ms apps, ~20 ms mics)</option>
+            <option value="balanced">Balanced (~60 ms apps, ~30 ms mics)</option>
+            <option value="playback">Stable (~100 ms apps, ~60 ms mics)</option>
           </select>
         </label>
-        <p class="muted small">Latency / Stability: pick <b>Stable</b> if you hear stutters or crackles.</p>
-        <label class="check" title="When an app (like Spotify) and a mic or line are both sent to MIX, hold the app back on MIX by the time it takes you to hear it and for your voice to come back through the mic. Your monitors (MON 1, MON 2) get no extra delay."><input id="autoSync" type="checkbox"> Karaoke sync (line up apps with mics on MIX)</label>
-        <p class="muted small">Fine-tune each input with its <b>SYNC</b> slider (ms, applies to MIX only). Bluetooth headphones usually need extra delay on the app.</p>
+        <p class="muted small">Latency / Stability: buffers grow on their own after a dropout. Pick <b>Low latency</b> or <b>Stable</b> if you still hear stutters or crackles.</p>
         <label class="check" title="Also list devices with more than 2 channels"><input id="showMultichannel" type="checkbox"> Show multichannel devices</label>
         <label class="check" title="Prevent picking the same device twice and virtual-cable feedback loops"><input id="routingSafety" type="checkbox"> Routing safety (duplicate &amp; loop guard)</label>
       </section>

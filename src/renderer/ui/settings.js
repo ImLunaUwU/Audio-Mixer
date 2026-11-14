@@ -57,7 +57,6 @@ export function initSettings(ctl) {
   renders.push(bindCheckbox("showMultichannel", { get: () => c().showMultichannelDevices, set: v => { c().showMultichannelDevices = v; ctl.save(); ctl.refreshDevices({ notify: false }); } }));
   renders.push(bindCheckbox("routingSafety", { get: () => c().enforceRoutingSafety, set: v => { c().enforceRoutingSafety = v; ctl.save(); ctl.renderAll(); } }));
   renders.push(bindCheckbox("compactMode", { get: () => c().compactMode, set: v => { c().compactMode = v; ctl.save(); ctl.applyLayout(); } }));
-  renders.push(bindCheckbox("autoSync", { get: () => c().autoSync, set: v => ctl.setAutoSync(v) }));
   renders.push(bindCheckbox("closeToTray", { get: () => c().closeToTray, set: v => { c().closeToTray = v; ctl.save(); } }));
 
   const latency = $("#latencyHint");

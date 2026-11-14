@@ -3,17 +3,15 @@
 
 // Config schema + migration. Pure module (no Electron imports) so it can be unit-tested.
 
-const CONFIG_VERSION = 4;
+const CONFIG_VERSION = 5;
 const INPUT_COUNT = 3;
 const BUS_IDS = ["monitor", "monitor2", "output"];
 const MIN_DB = -60; // treated as silence (-inf)
 const MAX_INPUT_DB = 24;
 const MAX_BUS_DB = 12;
-// "ultra" (Ultra low) was added in 2.0. Unknown saved values fall back to "balanced".
+// "ultra" (Ultra low) was added in 2.0 and is the default. Unknown saved values fall back to it.
 const LATENCY_HINTS = ["ultra", "interactive", "balanced", "playback"];
-// Karaoke sync: per-input manual offset on MIX (ms). Negative = earlier than the others.
-const SYNC_OFFSET_MIN = -250;
-const SYNC_OFFSET_MAX = 500;
+const DEFAULT_LATENCY = "ultra";
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const isNum = value => typeof value === "number" && Number.isFinite(value);
@@ -37,7 +35,6 @@ const defaultInput = () => ({
   solo: false,
   forceMono: false,
   dump: false,
-  syncOffsetMs: 0,
   sends: { monitor: defaultSend(), monitor2: defaultSend(), output: defaultSend() }
 });
 
@@ -52,8 +49,7 @@ const DEFAULT_CONFIG = Object.freeze({
   driveDb: 0,
   softClip: { enabled: true, thresholdDb: -6 },
   limiter: { enabled: true, ceilingDb: -1 },
-  latencyHint: "balanced",
-  autoSync: true,
+  latencyHint: DEFAULT_LATENCY,
   showMultichannelDevices: false,
   enforceRoutingSafety: true,
   compactMode: false,
@@ -92,7 +88,6 @@ function normalizeInput(raw) {
     forceMono: !!input.forceMono,
     // DUMP (was "hideFromWindows" in early 2.0 builds).
     dump: bool(input.dump, bool(input.hideFromWindows, false)),
-    syncOffsetMs: Math.round(num(input.syncOffsetMs, 0, SYNC_OFFSET_MIN, SYNC_OFFSET_MAX)),
     sends: {
       monitor: normalizeSend(sends.monitor, legacyMonitorVolume, input.monitorMute),
       monitor2: normalizeSend(
@@ -182,6 +177,14 @@ function normalizeDumpDevice(raw, legacy) {
   return { id, name: id ? str(old.targetLabel).slice(0, 200) : "" };
 }
 
+// Before v5 "balanced" was the default, so configs that never changed it move to Ultra low.
+// An explicit Low latency or Stable choice is kept.
+function normalizeLatency(raw) {
+  const hint = LATENCY_HINTS.includes(raw.latencyHint) ? raw.latencyHint : DEFAULT_LATENCY;
+  const version = isNum(raw.version) ? raw.version : 0;
+  return version < 5 && hint === "balanced" ? DEFAULT_LATENCY : hint;
+}
+
 function migrateConfig(rawConfig) {
   const raw = rawConfig && typeof rawConfig === "object" ? rawConfig : {};
   const rawInputs = Array.isArray(raw.inputs) ? raw.inputs : [];
@@ -207,8 +210,7 @@ function migrateConfig(rawConfig) {
       enabled: bool(limiter.enabled, true),
       ceilingDb: num(limiter.ceilingDb, -1, -12, 0)
     },
-    latencyHint: LATENCY_HINTS.includes(raw.latencyHint) ? raw.latencyHint : "balanced",
-    autoSync: bool(raw.autoSync, true),
+    latencyHint: normalizeLatency(raw),
     showMultichannelDevices: bool(raw.showMultichannelDevices, false),
     enforceRoutingSafety: bool(raw.enforceRoutingSafety, true),
     compactMode: bool(raw.compactMode, false),
@@ -241,8 +243,7 @@ export {
   MAX_INPUT_DB,
   MAX_BUS_DB,
   LATENCY_HINTS,
-  SYNC_OFFSET_MIN,
-  SYNC_OFFSET_MAX,
+  DEFAULT_LATENCY,
   DEFAULT_CONFIG,
   cloneDefaults,
   defaultInput,

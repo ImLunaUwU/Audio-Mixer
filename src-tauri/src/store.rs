@@ -88,7 +88,7 @@ impl Store {
     }
 
     pub fn latency_hint(&self) -> String {
-        self.config.lock().unwrap().get("latencyHint").and_then(Value::as_str).unwrap_or("balanced").to_string()
+        self.config.lock().unwrap().get("latencyHint").and_then(Value::as_str).unwrap_or("ultra").to_string()
     }
 
     pub fn window(&self) -> Option<Value> {
