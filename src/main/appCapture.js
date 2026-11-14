@@ -13,7 +13,7 @@ const SUPPORTED = process.platform === "win32" && process.arch === "x64";
 const PCM_FORMAT = Object.freeze({ sampleRate: 48000, channels: 2, format: "s16le" });
 
 let loopback = null;
-const captures = new Map(); // pid -> { child, owner }
+const captures = new Map(); // pid -> { child, ownerId, sink, stopped }
 
 function getLoopback() {
   if (!SUPPORTED) return null;
@@ -110,6 +110,31 @@ function stopOwnedBy(webContentsId) {
   });
 }
 
+function spawnHelper(pid, entry) {
+  const lib = getLoopback();
+  const child = spawn(lib.getLoopbackBinaryPath(), [pid], {
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  entry.child = child;
+
+  let stderr = "";
+  child.stdout.on("data", chunk => {
+    if (!entry.stopped && entry.child === child) entry.sink.data(chunk);
+  });
+  child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-500); });
+  const finish = reason => {
+    if (entry.child !== child) return; // replaced by restart(): not the end of the source
+    if (captures.get(pid) === entry) captures.delete(pid);
+    if (!entry.stopped) {
+      entry.stopped = true;
+      entry.sink.ended(reason);
+    }
+  };
+  child.on("error", error => finish(error.message));
+  child.on("exit", code => finish(code === 0 ? "process exited" : `helper exited (${code})${stderr ? `: ${stderr.trim()}` : ""}`));
+}
+
 /**
  * Start capturing `pid`. `sink` receives { data(chunk), ended(reason) }.
  */
@@ -118,29 +143,33 @@ function start(pid, ownerId, sink) {
   if (!lib) throw new Error("Per-app audio capture requires Windows 10 (2004+) x64.");
   if (!/^\d+$/.test(pid)) throw new Error("Invalid process id.");
   stop(pid);
-
-  const child = spawn(lib.getLoopbackBinaryPath(), [pid], {
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-  const entry = { child, ownerId, stopped: false };
+  const entry = { child: null, ownerId, sink, stopped: false };
   captures.set(pid, entry);
-
-  let stderr = "";
-  child.stdout.on("data", chunk => {
-    if (!entry.stopped) sink.data(chunk);
-  });
-  child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-500); });
-  const finish = reason => {
-    if (captures.get(pid) === entry) captures.delete(pid);
-    if (!entry.stopped) {
-      entry.stopped = true;
-      sink.ended(reason);
-    }
-  };
-  child.on("error", error => finish(error.message));
-  child.on("exit", code => finish(code === 0 ? "process exited" : `helper exited (${code})${stderr ? `: ${stderr.trim()}` : ""}`));
+  spawnHelper(pid, entry);
   return { pid, ...PCM_FORMAT };
 }
 
-module.exports = { isSupported, listApps, start, stop, stopAll, stopOwnedBy, PCM_FORMAT };
+/**
+ * Re-initialise the process loopback client for `pid` on the same sink. Used after the app's
+ * Windows output was moved (DUMP on/off), so the capture never stays bound to the stream the
+ * app had on its old endpoint. The new helper is started before the old one is killed, and
+ * only the newest helper's data reaches the sink. Returns true if a capture was restarted.
+ */
+function restart(pid) {
+  const entry = captures.get(String(pid));
+  if (!entry || entry.stopped) return false;
+  const old = entry.child;
+  try {
+    spawnHelper(String(pid), entry);
+  } catch (error) {
+    console.error("[appCapture] restart failed:", error);
+    entry.child = old;
+    return false;
+  }
+  try { old?.kill(); } catch (_) {}
+  return true;
+}
+
+const isCapturing = pid => captures.has(String(pid));
+
+module.exports = { isSupported, listApps, start, restart, isCapturing, stop, stopAll, stopOwnedBy, PCM_FORMAT };

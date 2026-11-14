@@ -10,7 +10,7 @@ A low-latency desktop mixer for Windows. Capture microphones, line inputs **or i
 - Source: any capture device **or a running application** (per-app capture via Windows WASAPI process loopback).
 - Gain fader in dB, from -∞ to **+24 dB**.
 - Mute, Solo, Mono sum, Enable.
-- **HIDE** (app inputs): stops the app playing straight into your headphones, so you hear it only through the mixer (see *Hide from Windows*).
+- **DUMP** (app inputs): sends the app's Windows output to a dump device you choose, so it stops playing straight into your headphones and you hear it only through the mixer (see *DUMP*).
 - Three sends per strip (MON 1 / MON 2 / MIX), each with its own on/off and level.
 - Peak + RMS meter with peak hold and a latching clip light.
 - Each source remembers its own strip settings. Apps are remembered by exe name.
@@ -78,6 +78,7 @@ Hover an app input's status light to see its live buffer level, dropout count an
 | ↑ / ↓ (Shift) | Nudge selected fader ±0.5 dB (±3 dB) |
 | 0 | Reset selected fader to 0 dB |
 | M / S / O / E | Mute / Solo / Mono / Enable selected input |
+| D | DUMP selected app input (hear it only through the mixer) |
 | Shift + M | Mute / unmute all outputs |
 | Ctrl + S | Save preset |
 | Ctrl + 1 – 9 | Load preset 1 – 9 |
@@ -96,18 +97,20 @@ Running apps with a visible window appear in each input's **Applications** group
 - Capturing doesn't mute the app on its normal output device.
 - Apps that play audio from a windowless helper process are captured through the parent app's process tree.
 
-## Hide from Windows
+## DUMP
 
-Capturing an app doesn't take it off its normal output, so by default you hear it twice: once directly from Windows and once through the mixer. The **HIDE** button on an app input fixes that.
+Capturing an app doesn't take it off its normal output, so by default you hear it twice: once directly from Windows and once through the mixer. The **DUMP** button on an app input (shortcut **D**) fixes that.
 
-- **On:** the app's own Windows output is moved to a silent device (a device nobody listens to, such as a spare virtual cable). App capture follows the process, not the device, so the mixer keeps receiving it and you hear it only through MON 1 / MON 2 / MIX.
+- **Dump device:** set it first in **Settings > Dump device**. It is the Windows playback device dumped apps are sent to, so pick one nobody listens to (a spare virtual cable, Steam Streaming Speakers, a virtual audio driver you never route anywhere). Nothing is picked for you and it is not set by default. The list shows every active Windows playback device, matched by its Windows endpoint id, so devices with the same name (for example *Line 1 (Virtual Audio Cable)*, which exists as both a playback and a recording device) never get mixed up. Duplicate names get a short id in brackets.
+- **Warnings:** the setting warns (but still lets you choose it) when the device is one of your mixer outputs (MON 1 / MON 2 / MIX), when it looks like it feeds one of your mixer inputs, or when it is the Windows default output.
+- **On:** the app's own Windows output goes to the dump device. App capture follows the process, not the device, so the mixer keeps receiving it and you hear it only through MON 1 / MON 2 / MIX. When the app is moved, its capture is restarted once so it follows the new stream cleanly.
+- **No dump device set:** pressing DUMP does nothing to the app. It shows a message and opens Settings at the Dump device picker.
 - **Off:** the app goes back to the output it had before (usually the Windows default).
 - It does **not** mute the app. Muting an app in Windows would silence the capture too.
-- Pick the silent device in **Settings → Hide from Windows**. *Automatic* picks a virtual cable that isn't the Windows default and isn't used by any mixer bus or input. If none is found, the setting shows a warning and hidden apps keep playing normally until you pick one.
 - The state is saved per input and remembered per app (by exe name).
-- Only active while the input is enabled. Disabling the input, picking another source, quitting the mixer, or a renderer crash puts the app back. Windows remembers per-app routing even after the mixer exits, so every change is journaled in `appRouting.json` first. If the mixer itself crashes, the original routing is restored the next time it starts (or as soon as the app is running again).
+- Only active while the input is enabled. Disabling the input, picking another source, quitting the mixer, or a renderer crash puts the app back. Windows remembers per-app routing even after the mixer exits, so every change is journaled in `dumpRouting.json` first. If the mixer itself crashes, the original routing is restored the next time it starts (or as soon as the app is running again). A journal left by an early 2.0 build (`appRouting.json`) is picked up and restored too.
 
-This uses the same per-app device setting as Windows Settings → *App volume and device preferences* (the undocumented `IAudioPolicyConfigFactory` API, like EarTrumpet), through the small native helper `bin/AppRouter.exe` (source in `native/app-router`). Some apps only pick up a device change after they restart their audio stream (pause and play, or restart the app).
+This uses the same per-app device setting as Windows Settings > *App volume and device preferences* (the undocumented `IAudioPolicyConfigFactory` API, like EarTrumpet), through the small native helper `bin/AppRouter.exe` (source in `native/app-router`). Some apps only pick up a device change after they restart their audio stream (pause and play, or restart the app).
 
 ## Requirements
 
@@ -141,12 +144,12 @@ src/
     config.js      config schema + migration (pure, unit-tested)
     store.js       atomic JSON persistence
     appCapture.js  per-app capture helper management
-    appRouting.js  Hide from Windows: per-app output routing + crash-safe journal
+    dumpRouting.js DUMP: per-app output routing + crash-safe journal
   preload/     sandboxed bridge (window.mixerAPI)
   renderer/    UI + audio engine (ES modules, no framework)
     app.js         state + controller
     devices.js     discovery, rebinding, routing-safety rules
-    routing.js     Hide from Windows target choice (pure, unit-tested)
+    dump.js        DUMP device checks and picker labels (pure, unit-tested)
     engine/        engine.js (graph), sources.js, worklets.js, meters.js, dsp.js
     ui/            mixer strips, faders/meters, settings, presets, shortcuts, toasts
 native/        AppRouter.exe source (C++)
@@ -172,8 +175,9 @@ Settings live in `%APPDATA%/Audio Mixer/config.json` (`config.json` in the repo 
 - **No sound:** check that each output bus has a device selected (not *(Off)*), that the input's send buttons are lit, and that nothing is muted or soloed. A pulsing **SOLO** badge appears in the header when any input is soloed.
 - **An option is greyed out:** hover it. Routing safety blocks using the same device twice and virtual-cable loops. You can turn this off in Settings.
 - **Stutters or crackles:** set Settings → Audio engine → Latency / Stability to *Stable*. For app inputs, hover the status light to see whether dropouts are happening.
-- **HIDE is yellow or red:** hover it. Yellow means it's on but not active yet (for example the input is disabled). Red means it couldn't be applied, often because no silent device is set in Settings → Hide from Windows.
-- **A hidden app still plays in my headphones:** make sure the silent device isn't one you listen to, then pause and play in the app (some apps only switch device on a new stream).
-- **An app stayed on the silent device:** start the mixer again, it restores apps it changed. You can also reset it in Windows Settings → System → Sound → Volume mixer.
+- **DUMP is yellow or red:** hover it. Yellow means it's on but not active yet (for example the input is disabled). Red means it couldn't be applied, often because the dump device isn't connected.
+- **A dumped app still plays in my headphones:** make sure the dump device isn't one you listen to (Settings shows a warning if it is), then pause and play in the app (some apps only switch device on a new stream).
+- **An app stayed on the dump device:** start the mixer again, it restores apps it changed. You can also reset it in Windows Settings > System > Sound > Volume mixer.
+- **"Audio dropouts detected":** only real late-delivery dropouts count now. Pauses, quiet passages and device switches are shown as *quiet gaps* in the status light tooltip and don't grow the buffer.
 - **An app isn't listed:** it needs a visible window. Click ⟳ (or press Ctrl+R) after starting it.
 - **SmartScreen warning on install:** the installer isn't code-signed. Choose *More info → Run anyway*.

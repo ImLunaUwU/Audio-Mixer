@@ -71,11 +71,17 @@ test("device states migrate from old flat shape", () => {
   assert.equal(states.mic.sends.output.on, false);
 });
 
-test("hide from Windows defaults off and survives migration", () => {
-  const c = migrateConfig({ inputs: [{ deviceId: "app:1", hideFromWindows: true }, { hideFromWindows: "yes" }], appRouting: { targetId: "{x}", targetLabel: "Line 2" } });
-  assert.equal(c.inputs[0].hideFromWindows, true);
-  assert.equal(c.inputs[1].hideFromWindows, false);
-  assert.equal(c.inputs[2].hideFromWindows, false);
-  assert.deepEqual(c.appRouting, { targetId: "{x}", targetLabel: "Line 2" });
-  assert.deepEqual(migrateConfig({}).appRouting, { targetId: "", targetLabel: "" });
+test("DUMP defaults off, migrates from the old hide keys, dump device defaults unset", () => {
+  const c = migrateConfig({ inputs: [{ deviceId: "app:1", hideFromWindows: true }, { hideFromWindows: "yes" }, { dump: true, hideFromWindows: false }], appRouting: { targetId: "{x}", targetLabel: "Line 2" } });
+  assert.equal(c.inputs[0].dump, true);
+  assert.equal(c.inputs[1].dump, false);
+  assert.equal(c.inputs[2].dump, true);
+  assert.ok(!("hideFromWindows" in c.inputs[0]));
+  assert.ok(!("appRouting" in c));
+  assert.deepEqual(c.dumpDevice, { id: "{x}", name: "Line 2" }, "an explicitly chosen device carries over");
+  assert.deepEqual(migrateConfig({}).dumpDevice, { id: "", name: "" });
+  // "Automatic" from early 2.0 builds becomes "not set", never an automatic pick.
+  assert.deepEqual(migrateConfig({ appRouting: { targetId: "", targetLabel: "Line 1 (Virtual Audio Cable)" } }).dumpDevice, { id: "", name: "" });
+  assert.deepEqual(migrateConfig({ dumpDevice: { id: "{y}", name: "Steam Streaming Speakers" }, appRouting: { targetId: "{x}" } }).dumpDevice, { id: "{y}", name: "Steam Streaming Speakers" });
+  assert.equal(migrateDeviceStates({ "app-exe:spotify": { hideFromWindows: true, label: "Spotify" } })["app-exe:spotify"].dump, true);
 });

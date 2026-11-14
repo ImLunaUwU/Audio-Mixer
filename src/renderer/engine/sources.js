@@ -29,6 +29,11 @@ export class SourceManager {
         this.releaseApp(pid, false);
         this.onEnded?.(`${APP_PREFIX}${pid}`, reason);
       }));
+      // The app's Windows output moved (DUMP) and the main process re-initialised its
+      // capture: start the jitter buffer fresh instead of treating the switch as dropouts.
+      if (appAudio.onRerouted) {
+        this.unsubscribers.push(appAudio.onRerouted(pid => this.apps.get(String(pid))?.node.port.postMessage({ type: "reset" })));
+      }
     }
   }
 

@@ -122,43 +122,45 @@ export function initSettings(ctl) {
     renderAll();
   });
 
-  // Hide from Windows: silent device for hidden apps (Windows endpoint ids from AppRouter.exe).
-  const routeTarget = $("#routeTarget");
-  const routeStatus = $("#routeTargetStatus");
-  routeTarget.addEventListener("change", () => ctl.setRouteTarget(routeTarget.value));
-  function renderRouting() {
-    const routing = ctl.state.routing;
-    const chosen = c().appRouting;
-    const options = [h("option", { value: "" }, "Automatic (unused virtual cable)")];
-    routing.outputs.forEach(device => options.push(h("option", { value: device.id, title: device.name }, device.isDefault ? `${device.name} (Windows default)` : device.name)));
-    if (chosen.targetId && !routing.outputs.some(d => d.id === chosen.targetId)) {
-      options.push(h("option", { value: chosen.targetId, disabled: true }, `${chosen.targetLabel || "Saved device"} (not connected)`));
+  // Dump device: where DUMP sends an app's Windows output. Windows render endpoints from
+  // AppRouter.exe, matched by endpoint id. Never picked automatically.
+  const dumpSelect = $("#dumpDevice");
+  const dumpStatus = $("#dumpDeviceStatus");
+  dumpSelect.addEventListener("change", () => ctl.setDumpDevice(dumpSelect.value));
+  $("#dumpDeviceRefresh").addEventListener("click", () => ctl.refreshDumpDevices());
+  let dumpOptionsKey = "";
+  function renderDump() {
+    const d = ctl.state.dump;
+    const chosen = c().dumpDevice;
+    const options = [h("option", { value: "" }, "Not set")];
+    (d.options || []).forEach(opt => options.push(h("option", { value: opt.id, title: opt.title }, opt.label)));
+    if (chosen.id && !d.devices.some(dev => dev.id === chosen.id)) {
+      options.push(h("option", { value: chosen.id, disabled: true }, `${chosen.name || "Saved device"} (not connected)`));
     }
-    if (document.activeElement !== routeTarget) {
-      routeTarget.replaceChildren(...options);
-      routeTarget.value = chosen.targetId || "";
+    const key = JSON.stringify([chosen.id, ...options.map(o => [o.value, o.textContent])]);
+    if (key !== dumpOptionsKey && (document.activeElement !== dumpSelect || !dumpSelect.options.length)) {
+      dumpOptionsKey = key;
+      dumpSelect.replaceChildren(...options);
+      dumpSelect.value = chosen.id || "";
     }
-    const target = routing.target;
-    let level = "ok";
+    dumpSelect.disabled = !d.supported;
+    const target = d.target;
+    let level;
     let text;
-    if (!routing.supported) { level = "warn"; text = "Only available in the Windows app."; }
-    else if (!target) text = "Checking output devices...";
-    else if (!target.id) { level = "error"; text = target.warning; }
-    else {
-      level = target.level;
-      text = `Hidden apps play to ${target.name}${target.auto ? " (picked automatically)" : ""}.${target.warning ? ` Warning: ${target.warning}` : ""}`;
-    }
-    routeStatus.dataset.level = level;
-    routeStatus.textContent = text;
+    if (!d.supported) { level = "warn"; text = "Only available in the Windows app."; }
+    else if (!d.loaded || !target) { level = "ok"; text = "Checking playback devices..."; }
+    else { level = target.level; text = target.message; }
+    dumpStatus.dataset.level = level;
+    dumpStatus.textContent = text;
   }
 
   function renderAll() {
     renders.forEach(fn => fn());
-    renderRouting();
+    renderDump();
     $("#softClipThreshold").disabled = !c().softClip.enabled;
     $("#limiterCeiling").disabled = !c().limiter.enabled;
     renderEqPresets();
   }
   renderAll();
-  return { render: renderAll, renderRouting };
+  return { render: renderAll, renderDump };
 }

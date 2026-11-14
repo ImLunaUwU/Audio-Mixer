@@ -35,11 +35,12 @@ contextBridge.exposeInMainWorld("mixerAPI", {
     list: () => ipcRenderer.invoke("appAudio:list"),
     start: pid => ipcRenderer.invoke("appAudio:start", String(pid)),
     stop: pid => ipcRenderer.send("appAudio:stop", String(pid)),
-    onEnded: callback => subscribe("appAudio:ended", callback)
+    onEnded: callback => subscribe("appAudio:ended", callback),
+    onRerouted: callback => subscribe("appAudio:rerouted", callback)
   },
-  appRouting: {
-    isSupported: () => ipcRenderer.invoke("appRouting:isSupported"),
-    listOutputs: () => ipcRenderer.invoke("appRouting:listOutputs"),
-    sync: desired => ipcRenderer.invoke("appRouting:sync", desired)
+  dump: {
+    isSupported: () => ipcRenderer.invoke("dump:isSupported"),
+    listDevices: () => ipcRenderer.invoke("dump:listDevices"),
+    sync: desired => ipcRenderer.invoke("dump:sync", desired)
   }
 });

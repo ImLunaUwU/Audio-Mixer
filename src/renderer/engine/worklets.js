@@ -6,15 +6,22 @@
 // PCM arrives on a dedicated MessagePort straight from the main process (no hop
 // through the renderer's main thread). The processor:
 //  - buffers up to `target` ms before playing (target adapts: grows ×1.5 on every
-//    underrun, shrinks slowly after 20 s without one, clamped to [min, 400] ms);
+//    real dropout, shrinks slowly after 20 s without one, clamped to [min, 400] ms);
+//  - tells real dropouts apart from the source simply going quiet. The capture helper
+//    sends nothing while the app is silent, paused, or switching output device, so the
+//    ring also runs dry then. After running dry it rebuffers either way, and then looks at
+//    how the data came back: as a burst (late delivery, a real dropout: counted, target
+//    grows) or at the normal real-time pace (the app was just quiet: not counted, target
+//    unchanged). Only real dropouts reach the "dropouts" stat;
 //  - corrects clock drift between the capture device and the output device by
 //    nudging the playback rate (±0.5 % max, proportional to buffer error) instead of
 //    dropping or inserting samples;
 //  - on underrun fades out over the remaining samples, and fades back in on resume;
 //  - if the buffer overflows (burst after a stall) it skips ahead with a crossfade;
 //  - never allocates inside process() and never clamps (headroom is handled later).
-// node.port receives control messages ({ type: "port", port } / { type: "config" })
-// and posts stats ({ fillMs, targetMs, underruns, rate }) about once per second.
+// node.port receives control messages ({ type: "port", port } / { type: "config" } /
+// { type: "reset" } after the app's output device changed) and posts stats
+// ({ fillMs, targetMs, underruns, gaps, rate }) about once per second.
 const APP_PCM_PLAYER = `
 const CAP = 48000 * 2;           // 2 s ring
 const FADE = 240;                // 5 ms fades
@@ -29,16 +36,23 @@ class AppPcmPlayer extends AudioWorkletProcessor {
     this.right = new Float32Array(CAP);
     this.write = 0; this.read = 0; this.fill = 0; this.frac = 0;
     this.carry = new Uint8Array(4); this.carryLen = 0;
-    this.configure(o.targetMs || 60, o.minTargetMs || 30);
+    this.baseTargetMs = o.targetMs || 60; this.baseMinMs = o.minTargetMs || 30;
+    this.configure(this.baseTargetMs, this.baseMinMs);
     this.playing = false; this.gain = 0; this.fadeDir = 0;
     this.avgFill = 0; this.underruns = 0; this.sinceUnderrun = 0;
+    this.gaps = 0;               // times the source went quiet (not dropouts)
+    this.starved = false;        // ran dry; waiting to see how data comes back
+    this.clock = 0;              // output frames processed so far
+    this.resumeFrame = -1;       // this.clock at the first data after running dry
+    this.resumeFill = 0;         // ring fill right after that first data
     this.xfade = 0; this.xRead = 0; this.xFrac = 0;
     this.rate = this.baseRatio;
     this.statsEvery = sampleRate; this.statsCount = 0;
     this.port.onmessage = e => {
       const m = e.data;
       if (m && m.type === "port") m.port.onmessage = ev => this.push(ev.data);
-      else if (m && m.type === "config") this.configure(m.targetMs, m.minTargetMs);
+      else if (m && m.type === "config") { this.configure(m.targetMs, m.minTargetMs); this.baseTargetMs = m.targetMs; this.baseMinMs = m.minTargetMs; }
+      else if (m && m.type === "reset") this.reset();
       else if (m && (m.byteLength !== undefined)) this.push(m);
     };
   }
@@ -46,6 +60,15 @@ class AppPcmPlayer extends AudioWorkletProcessor {
     this.minTarget = Math.round(this.inRate * (minTargetMs || 30) / 1000);
     this.target = Math.max(this.minTarget, Math.round(this.inRate * (targetMs || 60) / 1000));
     this.maxTarget = Math.round(this.inRate * 0.4);
+  }
+  // Fresh start after the app's output moved: drop stale audio, rebuffer at the base target,
+  // and do not treat the switch gap as a dropout.
+  reset() {
+    this.write = 0; this.read = 0; this.fill = 0; this.frac = 0; this.carryLen = 0;
+    this.playing = false; this.gain = 0; this.fadeDir = 0; this.xfade = 0;
+    this.starved = false; this.resumeFrame = -1; this.sinceUnderrun = 0;
+    this.configure(this.baseTargetMs, this.baseMinMs);
+    this.avgFill = 0;
   }
   pushFrame(l, r) {
     this.left[this.write] = l; this.right[this.write] = r;
@@ -67,6 +90,24 @@ class AppPcmPlayer extends AudioWorkletProcessor {
       this.pushFrame(((b[i] | (b[i + 1] << 8)) << 16 >> 16) / 32768, ((b[i + 2] | (b[i + 3] << 8)) << 16 >> 16) / 32768);
     }
     for (; i < b.length; i++) this.carry[this.carryLen++] = b[i];
+    if (this.starved && this.resumeFrame < 0) { this.resumeFrame = this.clock; this.resumeFill = this.fill; }
+  }
+  // Called when the ring reached the target again after running dry.
+  classifyResume() {
+    if (!this.starved) return;
+    const need = this.target - this.resumeFill;
+    const elapsedIn = this.resumeFrame < 0 ? 0 : (this.clock - this.resumeFrame) * this.baseRatio;
+    const burst = need <= 0 || elapsedIn < need * 0.4;
+    if (burst) {
+      // Data was late and arrived all at once: a real dropout.
+      this.underruns++;
+      this.sinceUnderrun = 0;
+      this.target = Math.min(this.maxTarget, Math.round(this.target * 1.5));
+    } else {
+      this.gaps++;
+    }
+    this.starved = false;
+    this.resumeFrame = -1;
   }
   sample(buf, pos, frac) {
     const n = (pos + 1) % CAP;
@@ -76,11 +117,15 @@ class AppPcmPlayer extends AudioWorkletProcessor {
     const out = outputs[0];
     const L = out[0], R = out[1] || out[0];
     const n = L.length;
+    this.clock += n;
     // smoothed buffer level drives drift correction
     this.avgFill += (this.fill - this.avgFill) * 0.01;
 
     if (!this.playing) {
-      if (this.fill >= this.target) { this.playing = true; this.gain = 0; this.fadeDir = 1; this.avgFill = this.fill; }
+      if (this.fill >= this.target) {
+        this.classifyResume();
+        this.playing = true; this.gain = 0; this.fadeDir = 1; this.avgFill = this.fill;
+      }
       else { L.fill(0); if (R !== L) R.fill(0); this.stats(n); return true; }
     }
 
@@ -100,13 +145,12 @@ class AppPcmPlayer extends AudioWorkletProcessor {
 
     for (let i = 0; i < n; i++) {
       if (this.fill < 3) {
-        // underrun: fade what's left to silence and rebuffer with a larger target
+        // ran dry: rebuffer; classifyResume() decides later whether it was a dropout
         L[i] = 0; R[i] = 0;
         if (this.playing) {
           this.playing = false;
-          this.underruns++;
-          this.sinceUnderrun = 0;
-          this.target = Math.min(this.maxTarget, Math.round(this.target * 1.5));
+          this.starved = true;
+          this.resumeFrame = -1;
         }
         continue;
       }
@@ -150,6 +194,7 @@ class AppPcmPlayer extends AudioWorkletProcessor {
       fillMs: Math.round(this.fill / this.inRate * 1000),
       targetMs: Math.round(this.target / this.inRate * 1000),
       underruns: this.underruns,
+      gaps: this.gaps,
       rate: this.rate / this.baseRatio
     });
   }

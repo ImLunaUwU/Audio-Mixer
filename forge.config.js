@@ -28,11 +28,12 @@ module.exports = {
       asar: {
         unpack: "{**/*.json,**/application-loopback/bin/**}"
       },
-      // Native routing helper for "Hide from Windows" (resources/AppRouter.exe).
+      // Native routing helper for DUMP (resources/AppRouter.exe).
       extraResource: ["./bin/AppRouter.exe"],
       ignore: [
         /^\/config\.json$/,
         /^\/appRouting\.json$/,
+        /^\/dumpRouting\.json$/,
         /^\/bin($|\/)/,
         /^\/native($|\/)/,
         /^\/deviceStates\.json$/,

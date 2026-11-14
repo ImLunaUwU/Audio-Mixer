@@ -40,9 +40,9 @@ export function createInputStrip(index, ctl) {
   const mute = toggleButton("M", { className: "mute", title: "Mute (M)", onToggle: on => ctl.updateInput(index, { mute: on }) });
   const solo = toggleButton("S", { className: "solo", title: "Solo (S): only soloed inputs are heard", onToggle: on => ctl.updateInput(index, { solo: on }) });
   const mono = toggleButton("MONO", { className: "mono", title: "Sum to mono (O)", onToggle: on => ctl.updateInput(index, { forceMono: on }) });
-  const HIDE_TITLE = "Hide from Windows (H): stop this app playing straight into your headphones. Its Windows output moves to a silent device and you hear it only through the mixer. Click again to put it back.";
-  const hide = toggleButton("HIDE", { className: "hide", title: HIDE_TITLE, onToggle: () => ctl.toggleHide(index) });
-  hide.hidden = true;
+  const DUMP_TITLE = "DUMP (D): stop this app playing straight into your headphones. Its Windows output goes to your dump device (Settings > Dump device) and you hear it only through the mixer. Click again to put it back.";
+  const dump = toggleButton("DUMP", { className: "dump", title: DUMP_TITLE, onToggle: () => ctl.toggleDump(index) });
+  dump.hidden = true;
 
   const sendRows = {};
   const sends = h("div", { class: "sends" }, ...Object.entries(BUS_LABELS).map(([busId, meta]) => {
@@ -78,7 +78,7 @@ export function createInputStrip(index, ctl) {
     h("header", { class: "strip-header" }, title, power),
     sourceSelect,
     sends,
-    h("div", { class: "strip-buttons" }, mute, solo, mono, hide),
+    h("div", { class: "strip-buttons" }, mute, solo, mono, dump),
     h("div", { class: "strip-body" }, fader.el, meter.el),
     h("footer", { class: "strip-footer" }, fader.readout, meter.clip)
   );
@@ -106,7 +106,7 @@ export function createInputStrip(index, ctl) {
       mute.setPressed(c.mute);
       solo.setPressed(c.solo);
       mono.setPressed(c.forceMono);
-      hide.setPressed(c.hideFromWindows);
+      dump.setPressed(c.dump);
       fader.set(c.gainDb);
       Object.entries(sendRows).forEach(([busId, row]) => {
         const send = c.sends[busId];
@@ -120,20 +120,20 @@ export function createInputStrip(index, ctl) {
       statusDot.dataset.state = status.state;
       statusDot.title = status.message;
     },
-    updateRoute({ isApp, supported, active, error, targetName }) {
+    updateDump({ isApp, supported, active, error, targetName }) {
       const c = cfg();
-      hide.hidden = !isApp;
-      hide.setPressed(c.hideFromWindows);
-      hide.disabled = isApp && !supported && !c.hideFromWindows;
-      const pending = c.hideFromWindows && !active;
-      hide.classList.toggle("pending", pending);
-      hide.dataset.state = !c.hideFromWindows ? "off" : active ? "active" : error ? "error" : "pending";
-      let title = HIDE_TITLE;
-      if (!supported) title = "Hide from Windows is only available in the Windows app.";
-      else if (c.hideFromWindows && active) title = `Hidden from Windows: this app plays to ${targetName || "the silent device"}, so you hear it only through the mixer. Click to put it back on its normal output.`;
-      else if (c.hideFromWindows && error) title = `Hide from Windows is on but not active: ${error}`;
-      else if (c.hideFromWindows && !c.enabled) title = "Hide from Windows is on, but the input is disabled, so the app plays normally.";
-      hide.title = title;
+      dump.hidden = !isApp;
+      dump.setPressed(c.dump);
+      dump.disabled = isApp && !supported && !c.dump;
+      const pending = c.dump && !active;
+      dump.classList.toggle("pending", pending);
+      dump.dataset.state = !c.dump ? "off" : active ? "active" : error ? "error" : "pending";
+      let title = DUMP_TITLE;
+      if (!supported) title = "DUMP is only available in the Windows app.";
+      else if (c.dump && active) title = `Dumped: this app plays to ${targetName || "your dump device"} in Windows, so you hear it only through the mixer. Click to put it back on its normal output.`;
+      else if (c.dump && error) title = `DUMP is on but not active: ${error}`;
+      else if (c.dump && !c.enabled) title = "DUMP is on, but the input is disabled, so the app plays normally.";
+      dump.title = title;
     },
     renderMeter(channel) { meter.render(channel); },
     setStatusTitle(message) { statusDot.title = message; }

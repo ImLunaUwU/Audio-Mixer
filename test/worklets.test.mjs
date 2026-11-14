@@ -133,19 +133,69 @@ test("jitter buffer: absorbs clock drift by resampling, no dropouts", () => {
   assert.ok(p.rate > 1.0005, "playback sped up slightly to follow the fast producer");
 });
 
-test("jitter buffer: underrun fades out, grows target, recovers with a fade-in", () => {
+test("jitter buffer: late data (burst after running dry) is a dropout: grows target, fades back in", () => {
   const p = newPlayer();
   const tone = () => [16384, 16384];
   p.push(pcmBytes(3000, tone));
   pull(p, 10);
   const before = p.target;
   const out = pull(p, 30); // starve it
-  assert.equal(p.underruns, 1);
-  assert.ok(p.target > before, "target grew");
   for (let i = 1; i < out.length; i++) assert.ok(Math.abs(out[i] - out[i - 1]) < 0.02, `no click at ${i}`);
-  p.push(pcmBytes(10000, tone));
+  assert.equal(p.underruns, 0, "not judged until the data comes back");
+  p.push(pcmBytes(10000, tone)); // the late backlog arrives all at once
   const resumed = pull(p, 10);
+  assert.equal(p.underruns, 1);
+  assert.equal(p.gaps, 0);
+  assert.ok(p.target > before, "target grew");
   assert.ok(resumed[0] < 0.01 && Math.abs(resumed[resumed.length - 1] - 0.5) < 1e-6);
+});
+
+test("jitter buffer: source going quiet (data resumes at real-time pace) is not a dropout", () => {
+  // ApplicationLoopback.exe sends nothing while the app is silent, paused or switching
+  // its output device; that must not count as a dropout or grow the buffer.
+  const p = newPlayer();
+  const tone = () => [16384, 16384];
+  p.push(pcmBytes(3000, tone));
+  pull(p, 10);
+  const before = p.target;
+  for (let gap = 0; gap < 6; gap++) {
+    pull(p, 200); // ~0.5 s of silence from the app
+    // audio resumes in real time: 1024-frame chunks (4 KB stdout writes) every ~21 ms
+    for (let k = 0; k < 12; k++) { p.push(pcmBytes(1024, tone)); pull(p, 8); }
+  }
+  assert.equal(p.underruns, 0);
+  assert.equal(p.gaps, 6);
+  assert.equal(p.target, before, "target unchanged");
+});
+
+test("jitter buffer: real-time resume is also recognised at the low-latency target", () => {
+  const p = newPlayer(48000, { targetMs: 40, minTargetMs: 25 });
+  const tone = () => [16384, 16384];
+  p.push(pcmBytes(2000, tone));
+  pull(p, 10);
+  pull(p, 100);
+  for (let k = 0; k < 6; k++) { p.push(pcmBytes(1024, tone)); pull(p, 8); }
+  assert.equal(p.underruns, 0);
+  assert.equal(p.gaps, 1);
+});
+
+test("jitter buffer: reset (output device changed) flushes and restarts at the base target", () => {
+  const p = newPlayer();
+  const tone = () => [16384, 16384];
+  p.push(pcmBytes(3000, tone));
+  pull(p, 10);
+  pull(p, 30);
+  p.push(pcmBytes(10000, tone));
+  pull(p, 10);
+  assert.ok(p.target > 2880);
+  p.port.onmessage({ data: { type: "reset" } });
+  assert.equal(p.fill, 0);
+  assert.equal(p.playing, false);
+  assert.equal(p.target, 2880, "back to 60 ms");
+  pull(p, 5);
+  p.push(pcmBytes(4000, tone)); // the new stream arrives
+  pull(p, 10);
+  assert.equal(p.underruns, 1, "the switch gap is not counted");
 });
 
 test("jitter buffer: overflow after a stall skips ahead with a crossfade", () => {

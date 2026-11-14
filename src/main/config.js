@@ -31,7 +31,7 @@ const defaultInput = () => ({
   mute: false,
   solo: false,
   forceMono: false,
-  hideFromWindows: false,
+  dump: false,
   sends: { monitor: defaultSend(), monitor2: defaultSend(), output: defaultSend() }
 });
 
@@ -51,7 +51,7 @@ const DEFAULT_CONFIG = Object.freeze({
   enforceRoutingSafety: true,
   compactMode: false,
   closeToTray: true,
-  appRouting: { targetId: "", targetLabel: "" },
+  dumpDevice: { id: "", name: "" },
   presets: [],
   window: null
 });
@@ -83,7 +83,8 @@ function normalizeInput(raw) {
     mute: bool(input.mute, false),
     solo: bool(input.solo, false),
     forceMono: !!input.forceMono,
-    hideFromWindows: bool(input.hideFromWindows, false),
+    // DUMP (was "hideFromWindows" in early 2.0 builds).
+    dump: bool(input.dump, bool(input.hideFromWindows, false)),
     sends: {
       monitor: normalizeSend(sends.monitor, legacyMonitorVolume, input.monitorMute),
       monitor2: normalizeSend(
@@ -162,9 +163,15 @@ function normalizeWindow(raw) {
   };
 }
 
-function normalizeAppRouting(raw) {
-  const routing = raw && typeof raw === "object" ? raw : {};
-  return { targetId: str(routing.targetId).slice(0, 512), targetLabel: str(routing.targetLabel).slice(0, 200) };
+// Dump device: the Windows render endpoint that dumped apps play to. Never picked
+// automatically; empty until the user chooses one. Early 2.0 builds stored it as
+// appRouting { targetId, targetLabel } ("" meant automatic, which no longer exists).
+function normalizeDumpDevice(raw, legacy) {
+  const device = raw && typeof raw === "object" ? raw : null;
+  if (device) return { id: str(device.id).slice(0, 512), name: str(device.name).slice(0, 200) };
+  const old = legacy && typeof legacy === "object" ? legacy : {};
+  const id = str(old.targetId).slice(0, 512);
+  return { id, name: id ? str(old.targetLabel).slice(0, 200) : "" };
 }
 
 function migrateConfig(rawConfig) {
@@ -197,7 +204,7 @@ function migrateConfig(rawConfig) {
     enforceRoutingSafety: bool(raw.enforceRoutingSafety, true),
     compactMode: bool(raw.compactMode, false),
     closeToTray: bool(raw.closeToTray, true),
-    appRouting: normalizeAppRouting(raw.appRouting),
+    dumpDevice: normalizeDumpDevice(raw.dumpDevice, raw.appRouting),
     presets: Array.isArray(raw.presets)
       ? raw.presets
           .filter(item => item && typeof item.name === "string" && item.name.trim() && item.snapshot)

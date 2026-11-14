@@ -6,7 +6,7 @@ const { version, productName } = require("../../package.json");
 const { migrateConfig, migrateDeviceStates } = require("./config");
 const { readJson, createDebouncedWriter } = require("./store");
 const appCapture = require("./appCapture");
-const { createAppRouter, createNodeRunner, defaultHelperPath } = require("./appRouting");
+const { createDumpRouter, createNodeRunner, defaultHelperPath } = require("./dumpRouting");
 
 if (require("electron-squirrel-startup")) app.quit();
 
@@ -21,8 +21,9 @@ const DEVICE_STATE_PATH = path.join(DATA_DIR, "deviceStates.json");
 
 const configWriter = createDebouncedWriter(CONFIG_PATH);
 const deviceStateWriter = createDebouncedWriter(DEVICE_STATE_PATH);
-const appRouter = createAppRouter({
-  journalPath: path.join(DATA_DIR, "appRouting.json"),
+const dumpRouter = createDumpRouter({
+  journalPath: path.join(DATA_DIR, "dumpRouting.json"),
+  legacyJournalPaths: [path.join(DATA_DIR, "appRouting.json")], // early 2.0 "Hide from Windows"
   runner: createNodeRunner(defaultHelperPath(ROOT_DIR))
 });
 let routingSynced = false;
@@ -123,10 +124,10 @@ function createWindow(startHidden) {
 
   const contentsId = win.webContents.id;
   // Never leak capture helpers if the renderer reloads or crashes.
-  // Hidden apps go back to their normal output whenever the renderer is not in control.
+  // Dumped apps go back to their normal output whenever the renderer is not in control.
   const releaseRenderer = () => {
     appCapture.stopOwnedBy(contentsId);
-    if (!isQuitting) appRouter.restoreAll().catch(() => {});
+    if (!isQuitting) dumpRouter.restoreAll().catch(() => {});
   };
   win.webContents.on("did-start-navigation", (_e, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) releaseRenderer();
@@ -237,16 +238,37 @@ function registerIpc() {
   });
   on("appAudio:stop", (_event, rawPid) => appCapture.stop(String(rawPid ?? "")));
 
-  handle("appRouting:isSupported", () => appRouter.isSupported());
-  handle("appRouting:listOutputs", () => appRouter.listOutputs());
-  handle("appRouting:sync", (_event, desired) => {
+  handle("dump:isSupported", () => dumpRouter.isSupported());
+  handle("dump:listDevices", () => dumpRouter.listDevices());
+  handle("dump:sync", async (event, desired) => {
     routingSynced = true;
     const items = Array.isArray(desired?.items) ? desired.items.slice(0, 16) : [];
-    return appRouter.sync({
+    const result = await dumpRouter.sync({
       targetId: typeof desired?.targetId === "string" ? desired.targetId.slice(0, 512) : "",
       items: items.map(item => ({ exeName: String(item?.exeName ?? "").slice(0, 260), pid: String(item?.pid ?? "") }))
     });
+    reinitMovedCaptures(event.sender, result.changed);
+    return { dumped: result.dumped, errors: result.errors };
   });
+}
+
+// When DUMP moves an app's Windows output, the app tears its audio stream down and opens a
+// new one on the other endpoint. Give that a moment, then re-initialise the loopback capture
+// for that app and tell the renderer, which flushes its jitter buffer once. The switch is one
+// short gap instead of a capture that keeps tripping over the old stream.
+const REROUTE_SETTLE_MS = 400;
+function reinitMovedCaptures(sender, changed) {
+  const pids = new Set();
+  (changed || []).forEach(({ pids: list }) => (list || []).forEach(pid => {
+    if (appCapture.isCapturing(pid)) pids.add(String(pid));
+  }));
+  if (!pids.size) return;
+  setTimeout(() => {
+    pids.forEach(pid => {
+      if (!appCapture.restart(pid)) return;
+      if (!sender.isDestroyed()) sender.send("appAudio:rerouted", pid);
+    });
+  }, REROUTE_SETTLE_MS);
 }
 
 function debounce(fn, ms) {
@@ -285,7 +307,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", () => {
     isQuitting = true;
     appCapture.stopAll();
-    appRouter.restoreAllSync();
+    dumpRouter.restoreAllSync();
     configWriter.flush();
     deviceStateWriter.flush();
   });
@@ -298,7 +320,7 @@ if (!app.requestSingleInstanceLock()) {
   });
   process.on("exit", () => {
     appCapture.stopAll();
-    appRouter.restoreAllSync();
+    dumpRouter.restoreAllSync();
   });
 
   app.whenReady().then(() => {
@@ -308,6 +330,6 @@ if (!app.requestSingleInstanceLock()) {
     createTray();
     app.on("activate", () => showMainWindow());
     // Left over from a crash and the mixer never took over again: put those apps back.
-    setTimeout(() => { if (!routingSynced) appRouter.restoreAll().catch(() => {}); }, 20000).unref?.();
+    setTimeout(() => { if (!routingSynced) dumpRouter.restoreAll().catch(() => {}); }, 20000).unref?.();
   });
 }

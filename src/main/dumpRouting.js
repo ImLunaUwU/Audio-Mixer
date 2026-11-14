@@ -1,8 +1,9 @@
 "use strict";
 
-// "Hide from Windows": reroute an application's own Windows output to a device nobody listens
-// to, so it stops playing straight into the headphones while app capture (which follows the
-// process, not the device) keeps feeding it into the mixer.
+// DUMP: send an application's own Windows output to a "dump device" the user picked in
+// Settings (a device nobody listens to), so it stops playing straight into the headphones
+// while app capture (which follows the process, not the device) keeps feeding the mixer.
+// The dump device is never chosen automatically.
 //
 // Routing is done by bin/AppRouter.exe through the per-app persisted default endpoint API
 // (the same one behind Windows Settings > App volume and device preferences). Windows keeps
@@ -32,11 +33,18 @@ function parseTasklist(stdout) {
   return byExe;
 }
 
-function parseOutputs(stdout) {
+// AppRouter.exe list: "<isDefault 0|1>\t<endpoint id>\t<friendly name>" per active render
+// endpoint. Endpoints are identified by their Windows id; friendly names are not unique
+// (Virtual Audio Cable uses "Line 1 (Virtual Audio Cable)" for both the render and the
+// capture side, and two render endpoints can share a name too).
+function parseDevices(stdout) {
+  const seen = new Set();
   return String(stdout || "").split(/\r?\n/).map(line => {
     const [isDefault, id, ...name] = line.split("\t");
-    if (!id || !id.trim()) return null;
-    return { id: id.trim(), name: name.join(" ").trim() || id.trim(), isDefault: isDefault === "1" };
+    const endpointId = String(id || "").trim();
+    if (!endpointId || seen.has(endpointId)) return null;
+    seen.add(endpointId);
+    return { id: endpointId, name: name.join(" ").trim() || endpointId, isDefault: isDefault === "1" };
   }).filter(Boolean);
 }
 
@@ -80,15 +88,26 @@ function createNodeRunner(helperPath) {
 }
 
 /**
- * journalPath: JSON file of apps currently rerouted { [exeKey]: { exeName, previous, target } }.
+ * journalPath: JSON file of apps currently dumped { [exeKey]: { exeName, previous, target } }.
+ * legacyJournalPaths: older journal files (early 2.0 "Hide from Windows" used appRouting.json).
+ *   Their entries are merged in so apps rerouted by an older build still get put back.
  * runner: { supported, helper(args), helperSync(args), processes(), processesSync() } (injectable for tests).
  */
-function createAppRouter({ journalPath, runner, log = console }) {
-  const loaded = readJson(journalPath, {});
+function createDumpRouter({ journalPath, legacyJournalPaths = [], runner, log = console }) {
   const journal = {};
-  Object.entries(loaded && typeof loaded.entries === "object" ? loaded.entries : {}).forEach(([key, entry]) => {
-    if (!key || !entry || typeof entry !== "object") return;
-    journal[key] = { exeName: String(entry.exeName || key), previous: String(entry.previous || ""), target: String(entry.target || "") };
+  const loadJournal = file => {
+    const loaded = readJson(file, {});
+    Object.entries(loaded && typeof loaded.entries === "object" ? loaded.entries : {}).forEach(([key, entry]) => {
+      if (!key || !entry || typeof entry !== "object" || journal[key]) return;
+      journal[key] = { exeName: String(entry.exeName || key), previous: String(entry.previous || ""), target: String(entry.target || "") };
+    });
+  };
+  loadJournal(journalPath);
+  let migratedLegacy = false;
+  legacyJournalPaths.forEach(file => {
+    if (!file || file === journalPath || !fs.existsSync(file)) return;
+    loadJournal(file);
+    migratedLegacy = true;
   });
   const appliedPids = new Map(); // exeKey -> Set(pid) set to the target during this run
   let chain = Promise.resolve();
@@ -100,9 +119,16 @@ function createAppRouter({ journalPath, runner, log = console }) {
       if (Object.keys(journal).length) writeJson(journalPath, { version: 1, entries: journal });
       else if (fs.existsSync(journalPath)) fs.unlinkSync(journalPath);
     } catch (error) {
-      log.error("[appRouting] journal write failed:", error.message);
+      log.error("[dumpRouting] journal write failed:", error.message);
     }
   };
+  if (migratedLegacy) {
+    saveJournal();
+    legacyJournalPaths.forEach(file => {
+      if (!file || file === journalPath) return;
+      try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch (error) { log.error("[dumpRouting] could not remove old journal:", error.message); }
+    });
+  }
 
   const serial = task => {
     const run = chain.then(task, task);
@@ -127,8 +153,11 @@ function createAppRouter({ journalPath, runner, log = console }) {
 
   /**
    * Make Windows routing match what the renderer wants.
-   * desired: { targetId, items: [{ exeName, pid }] } for every app input with "Hide" on.
-   * Returns { hidden: [exeKey], errors: [{ exeName, message }] }.
+   * desired: { targetId, items: [{ exeName, pid }] } for every enabled app input with DUMP on.
+   * targetId is the dump device's Windows endpoint id; "" (no dump device set) means nothing
+   * is dumped and earlier changes are undone.
+   * Returns { dumped: [exeKey], errors: [{ exeName, message }], changed: [{ key, pids }] }
+   * where `changed` lists the apps whose Windows output was moved during this call.
    */
   function sync(desired) {
     return serial(async () => {
@@ -137,9 +166,9 @@ function createAppRouter({ journalPath, runner, log = console }) {
         .map(item => ({ key: exeKey(item?.exeName), exeName: String(item?.exeName || ""), pid: String(item?.pid ?? "") }))
         .filter(item => item.key && /^\d+$/.test(item.pid));
       lastDesired = { targetId, items: items.map(({ exeName, pid }) => ({ exeName, pid })) };
-      const result = { hidden: [], errors: [] };
+      const result = { dumped: [], errors: [], changed: [] };
       if (!runner.supported) {
-        if (items.length) result.errors.push({ exeName: "", message: "Hide from Windows needs the Windows build of Audio Mixer." });
+        if (items.length) result.errors.push({ exeName: "", message: "DUMP needs the Windows build of Audio Mixer." });
         return result;
       }
       const wanted = new Map(targetId ? items.map(item => [item.key, item]) : []);
@@ -154,6 +183,7 @@ function createAppRouter({ journalPath, runner, log = console }) {
         if (!pids.length) continue; // app not running: restore when it comes back
         try {
           await restoreEntry(key, pids);
+          result.changed.push({ key, pids });
         } catch (error) {
           result.errors.push({ exeName: journal[key]?.exeName || key, message: error.message });
         }
@@ -181,8 +211,9 @@ function createAppRouter({ journalPath, runner, log = console }) {
             fresh.forEach(pid => applied.add(pid));
             entry.target = targetId;
             appliedPids.set(key, applied);
+            result.changed.push({ key, pids: fresh });
           }
-          result.hidden.push(key);
+          result.dumped.push(key);
         } catch (error) {
           if (journal[key] && !journal[key].target) delete journal[key];
           result.errors.push({ exeName: item.exeName, message: error.message });
@@ -208,20 +239,21 @@ function createAppRouter({ journalPath, runner, log = console }) {
         delete journal[key];
         appliedPids.delete(key);
       } catch (error) {
-        log.error(`[appRouting] restore failed for ${key}:`, error.message);
+        log.error(`[dumpRouting] restore failed for ${key}:`, error.message);
       }
     });
     saveJournal();
   }
 
-  async function listOutputs() {
+  // Active Windows render endpoints for the dump device picker.
+  async function listDevices() {
     if (!runner.supported) return [];
-    return parseOutputs(await runner.helper(["list"]));
+    return parseDevices(await runner.helper(["list"]));
   }
 
   return {
     isSupported: () => !!runner.supported,
-    listOutputs,
+    listDevices,
     sync,
     restoreAll: () => sync({ targetId: "", items: [] }),
     restoreAllSync,
@@ -229,4 +261,4 @@ function createAppRouter({ journalPath, runner, log = console }) {
   };
 }
 
-module.exports = { createAppRouter, createNodeRunner, defaultHelperPath, parseTasklist, parseOutputs, exeKey };
+module.exports = { createDumpRouter, createNodeRunner, defaultHelperPath, parseTasklist, parseDevices, exeKey };

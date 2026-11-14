@@ -9,7 +9,7 @@ import { initPresets } from "./ui/presets.js";
 import { initShortcuts, SHORTCUTS } from "./ui/shortcuts.js";
 import { toast, setStatus, reportError } from "./ui/toast.js";
 import { $, h, debounce } from "./ui/dom.js";
-import { resolveRouteTarget, buildRoutingRequest } from "./routing.js";
+import { resolveDumpDevice, dumpDeviceOptions, buildDumpRequest } from "./dump.js";
 
 const api = window.mixerAPI;
 const APP_POLL_MS = 5000;
@@ -30,8 +30,8 @@ const state = {
   selectedStrip: 0,
   stripStatus: [],
   mutedAllSnapshot: null,
-  // "Hide from Windows": silent reroute target + what the main process reported back.
-  routing: { supported: false, outputs: [], target: null, hidden: new Set(), errors: new Map(), lastRequest: "" }
+  // DUMP: the user's dump device + what the main process reported back.
+  dump: { supported: false, devices: [], options: [], loaded: false, target: null, dumped: new Set(), errors: new Map(), lastRequest: "" }
 };
 
 let engine = null;
@@ -179,7 +179,7 @@ function handleAppStats(sourceId, stats) {
     state.stripStatus[i] = {
       state: "live",
       underruns: stats.underruns,
-      message: `${cfg.label}: live · buffer ${stats.fillMs}/${stats.targetMs} ms · ${stats.underruns} dropout(s) · drift ${((stats.rate - 1) * 100).toFixed(2)} %`
+      message: `${cfg.label}: live · buffer ${stats.fillMs}/${stats.targetMs} ms · ${stats.underruns} dropout(s) · ${stats.gaps || 0} quiet gap(s) · drift ${((stats.rate - 1) * 100).toFixed(2)} %`
     };
     inputStrips[i]?.setStatusTitle(state.stripStatus[i].message);
     if (stats.underruns > prev && stats.underruns % 5 === 0) {
@@ -208,7 +208,7 @@ async function refreshDevices({ notify = false } = {}) {
     state.devices = devices;
     state.apps = appInfo.apps;
     state.appsSupported = appInfo.supported;
-    await refreshRouteOutputs();
+    await refreshDumpDevices();
     await queue(() => reconcile({ notify }));
     renderAll();
     setStatus(`${devices.inputs.length} inputs · ${devices.outputs.length} outputs · ${state.apps.length} apps`);
@@ -273,67 +273,77 @@ function updateAppPolling() {
   }
 }
 
-// ---------------------------------------------------------------- hide from Windows
-async function refreshRouteOutputs() {
-  const routing = state.routing;
+// ---------------------------------------------------------------- DUMP
+async function refreshDumpDevices() {
+  const d = state.dump;
   try {
-    routing.supported = !!(await api.appRouting?.isSupported());
-    routing.outputs = routing.supported ? await api.appRouting.listOutputs() : [];
+    d.supported = !!(await api.dump?.isSupported());
+    d.devices = d.supported ? await api.dump.listDevices() : [];
+    d.loaded = true;
   } catch (error) {
-    console.warn("Output list for Hide from Windows failed", error);
-    routing.outputs = [];
+    console.warn("Device list for DUMP failed", error);
+    d.devices = [];
   }
-  updateRouteTarget();
+  updateDumpTarget();
 }
 
-function updateRouteTarget() {
+function dumpContext() {
   const c = state.config;
-  const busLabels = Object.fromEntries(BUS_IDS.map(id => [id, c.buses[id].deviceId ? c.buses[id].label : ""]));
-  const inputLabels = c.inputs.filter(cfg => cfg.deviceId && !isAppSource(cfg.deviceId)).map(cfg => cfg.label);
-  state.routing.target = resolveRouteTarget({ outputs: state.routing.outputs, busLabels, inputLabels, chosenId: c.appRouting.targetId });
-  settingsUi?.renderRouting();
-}
-
-function routeStateFor(i) {
-  const cfg = getInput(i);
-  const r = state.routing;
-  const app = isAppSource(cfg.deviceId) ? state.apps.find(a => a.deviceId === cfg.deviceId) : null;
-  const key = app?.exeName?.toLowerCase() || "";
   return {
-    isApp: isAppSource(cfg.deviceId),
-    supported: r.supported,
-    active: !!key && r.hidden.has(key),
-    error: (key && r.errors.get(key)) || (cfg.hideFromWindows && !r.target?.id ? r.target?.warning : "") || "",
-    targetName: r.target?.name || ""
+    busLabels: Object.fromEntries(BUS_IDS.map(id => [id, c.buses[id].deviceId ? c.buses[id].label : ""])),
+    inputLabels: c.inputs.filter(cfg => cfg.deviceId && !isAppSource(cfg.deviceId)).map(cfg => cfg.label)
   };
 }
 
-const syncRouting = debounce(async () => {
-  const r = state.routing;
-  if (!r.supported || !state.config) return;
-  updateRouteTarget();
-  const request = buildRoutingRequest({ inputs: state.config.inputs, apps: state.apps, targetId: r.target?.id || "" });
+function updateDumpTarget() {
+  const d = state.dump;
+  const context = dumpContext();
+  d.target = resolveDumpDevice({ devices: d.devices, chosen: state.config.dumpDevice, ...context });
+  d.options = dumpDeviceOptions(d.devices, context);
+  settingsUi?.renderDump();
+}
+
+function dumpStateFor(i) {
+  const cfg = getInput(i);
+  const d = state.dump;
+  const app = isAppSource(cfg.deviceId) ? state.apps.find(a => a.deviceId === cfg.deviceId) : null;
+  const key = app?.exeName?.toLowerCase() || "";
+  const target = d.target;
+  return {
+    isApp: isAppSource(cfg.deviceId),
+    supported: d.supported,
+    active: !!key && d.dumped.has(key),
+    error: (key && d.errors.get(key)) || (cfg.dump && target && !target.id ? target.message : "") || "",
+    targetName: target?.name || ""
+  };
+}
+
+const syncDump = debounce(async () => {
+  const d = state.dump;
+  if (!d.supported || !state.config) return;
+  updateDumpTarget();
+  const request = buildDumpRequest({ inputs: state.config.inputs, apps: state.apps, targetId: d.target?.id || "" });
   const key = JSON.stringify(request);
-  if (key === r.lastRequest) return;
-  r.lastRequest = key;
+  if (key === d.lastRequest) return;
+  d.lastRequest = key;
   try {
-    const result = await api.appRouting.sync(request);
-    r.hidden = new Set(result?.hidden || []);
+    const result = await api.dump.sync(request);
+    d.dumped = new Set(result?.dumped || []);
     const errors = new Map((result?.errors || []).map(e => [String(e.exeName || "").toLowerCase(), e.message]));
     errors.forEach((message, exe) => {
-      if (r.errors.get(exe) !== message) toast(`Hide from Windows${exe ? ` (${exe})` : ""}: ${message}`, "error", 6000);
+      if (d.errors.get(exe) !== message) toast(`DUMP${exe ? ` (${exe})` : ""}: ${message}`, "error", 6000);
     });
-    r.errors = errors;
-    if (errors.size) r.lastRequest = ""; // try again on the next change or poll
+    d.errors = errors;
+    if (errors.size) d.lastRequest = ""; // try again on the next change or poll
   } catch (error) {
-    r.lastRequest = "";
-    reportError("Hide from Windows", error, "Could not change the app's Windows output");
+    d.lastRequest = "";
+    reportError("DUMP", error, "Could not change the app's Windows output");
   }
   renderStripsOnly();
 }, 250);
 
 function renderStripsOnly() {
-  inputStrips.forEach((strip, i) => strip.updateRoute(routeStateFor(i)));
+  inputStrips.forEach((strip, i) => strip.updateDump(dumpStateFor(i)));
 }
 
 // ---------------------------------------------------------------- controller
@@ -355,8 +365,8 @@ const ctl = {
     cfg.label = source ? source.label : "";
     const remembered = state.deviceStates[stateKey(cfg)];
     if (remembered) {
-      const { gainDb, mute, solo, forceMono, sends, hideFromWindows } = remembered;
-      Object.assign(cfg, { gainDb, mute, solo, forceMono, hideFromWindows: !!hideFromWindows, sends: JSON.parse(JSON.stringify(sends)) });
+      const { gainDb, mute, solo, forceMono, sends, dump } = remembered;
+      Object.assign(cfg, { gainDb, mute, solo, forceMono, dump: !!dump, sends: JSON.parse(JSON.stringify(sends)) });
     }
     await queue(() => connectInput(i));
     save();
@@ -377,34 +387,43 @@ const ctl = {
     else inputStrips[i].fader.set(cfg.gainDb);
   },
 
-  toggleHide(i) {
+  toggleDump(i) {
     const cfg = getInput(i);
     if (!cfg || !isAppSource(cfg.deviceId)) return;
-    const next = !cfg.hideFromWindows;
-    if (next && !state.routing.supported) {
-      toast("Hide from Windows is not available on this system.", "error");
+    const d = state.dump;
+    const next = !cfg.dump;
+    if (next && !d.supported) {
+      toast("DUMP is not available on this system.", "error");
       renderAll();
       return;
     }
-    ctl.updateInput(i, { hideFromWindows: next });
-    if (next && !state.routing.target?.id) {
-      toast(state.routing.target?.warning || "Pick a device for hidden apps in Settings.", "error", 7000);
-    } else if (next) {
-      toast(`${cfg.label}: hidden from Windows. It now plays to ${state.routing.target.name}, and you hear it through the mixer.`, "success", 5000);
-    } else {
-      toast(`${cfg.label}: back on its normal Windows output.`, "info");
+    if (next) updateDumpTarget();
+    if (next && d.target?.state === "unset") {
+      // Nothing to send the app to: leave DUMP off and point at the setting.
+      toast("Choose a dump device in Settings first. DUMP sends the app's Windows output there.", "error", 7000);
+      ctl.openDumpSettings();
+      renderAll();
+      return;
     }
+    ctl.updateInput(i, { dump: next });
+    if (!next) toast(`${cfg.label}: back on its normal Windows output.`, "info");
+    else if (!d.target?.id) toast(`${cfg.label}: DUMP is on but not active. ${d.target?.message || ""}`, "error", 7000);
+    else if (d.target.state === "warn") toast(`${cfg.label}: dumped to ${d.target.name}. Warning: ${d.target.conflicts.map(c => c.text).join("; ")}.`, "info", 8000);
+    else toast(`${cfg.label}: dumped. It now plays to ${d.target.name}, and you hear it through the mixer.`, "success", 5000);
   },
 
-  setRouteTarget(id) {
-    const output = state.routing.outputs.find(d => d.id === id);
-    state.config.appRouting = { targetId: output ? output.id : "", targetLabel: output ? output.name : "" };
+  setDumpDevice(id) {
+    const device = state.dump.devices.find(dev => dev.id === id);
+    if (id && !device) return; // stale option
+    state.config.dumpDevice = { id: device ? device.id : "", name: device ? device.name : "" };
     save();
-    updateRouteTarget();
+    updateDumpTarget();
+    const t = state.dump.target;
+    if (t?.state === "warn") toast(`Dump device set to ${t.name}. Warning: ${t.conflicts.map(c => c.text).join("; ")}.`, "info", 8000);
     renderAll();
   },
 
-  refreshRouteOutputs: async () => { await refreshRouteOutputs(); renderAll(); },
+  refreshDumpDevices: async () => { await refreshDumpDevices(); renderAll(); },
 
   updateSend(i, busId, patch) {
     Object.assign(getInput(i).sends[busId], patch);
@@ -484,6 +503,14 @@ const ctl = {
   loadPresetIndex: i => presetsUi.loadIndex(i),
   applyLayout,
   openSettings: () => togglePanel("#settingsPanel", true),
+  openDumpSettings() {
+    togglePanel("#settingsPanel", true);
+    const section = $("#dumpSection");
+    section?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    section?.classList.add("attention");
+    setTimeout(() => section?.classList.remove("attention"), 1600);
+    $("#dumpDevice")?.focus();
+  },
   openHelp: () => $("#helpDialog").showModal(),
   closePanels: () => togglePanel("#settingsPanel", false)
 };
@@ -512,7 +539,7 @@ function renderAll() {
   }));
   BUS_IDS.forEach(id => busStrips[id].update({ outputs: state.devices.outputs, disabled: disabled.buses[id], bus: c.buses[id] }));
   renderStripsOnly();
-  syncRouting();
+  syncDump();
   const solo = c.inputs.some(cfg => cfg.solo && cfg.enabled);
   $("#soloIndicator").hidden = !solo;
 }
