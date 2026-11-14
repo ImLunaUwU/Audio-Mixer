@@ -11,6 +11,7 @@ import { initShortcuts, SHORTCUTS } from "./ui/shortcuts.js";
 import { toast, setStatus, reportError } from "./ui/toast.js";
 import { $, h, debounce } from "./ui/dom.js";
 import { resolveDumpDevice, dumpDeviceOptions, buildDumpRequest } from "./dump.js";
+import { syncInfoFor } from "./sync.js";
 
 const api = window.mixerAPI;
 const APP_POLL_MS = 5000;
@@ -18,6 +19,7 @@ const APP_POLL_MS = 5000;
 // "Latency / Stability" profiles. The Rust engine owns the numbers (input jitter buffer,
 // secondary output buffer, WASAPI buffer size); these are shown in the UI only.
 export const LATENCY_PROFILES = {
+  ultra: { targetMs: 20, minTargetMs: 15, deviceTargetMs: 10 },
   interactive: { targetMs: 40, minTargetMs: 25 },
   balanced: { targetMs: 60, minTargetMs: 40 },
   playback: { targetMs: 100, minTargetMs: 70 }
@@ -103,6 +105,7 @@ function busActive() {
 // ---------------------------------------------------------------- engine
 async function startEngine() {
   engine = new MixerEngine({ latencyHint: state.config.latencyHint, inputCount: inputCount() });
+  engine.onSync = payload => inputStrips.forEach((strip, i) => strip.updateSync(syncInfoFor(payload, i)));
   await engine.init();
   sources = new SourceManager({
     onEnded: (sourceId, reason) => handleSourceEnded(sourceId, reason),
@@ -131,6 +134,7 @@ function applyMasterProcessing() {
 function applyStripParams() {
   if (!engine?.ctx) return;
   engine.soloActive = state.config.inputs.some(cfg => cfg.solo && cfg.enabled);
+  engine.setAutoSync(state.config.autoSync);
   const active = busActive();
   state.config.inputs.forEach((cfg, i) => engine.setStripParams(i, cfg, active));
 }
@@ -368,8 +372,8 @@ const ctl = {
       ? Object.values(state.deviceStates).find(s => !String(s.deviceId).startsWith("app-exe:") && normalizeLabel(s.label) === normalizeLabel(cfg.label))
       : null);
     if (remembered) {
-      const { gainDb, mute, solo, forceMono, sends, dump } = remembered;
-      Object.assign(cfg, { gainDb, mute, solo, forceMono, dump: !!dump, sends: JSON.parse(JSON.stringify(sends)) });
+      const { gainDb, mute, solo, forceMono, sends, dump, syncOffsetMs } = remembered;
+      Object.assign(cfg, { gainDb, mute, solo, forceMono, dump: !!dump, syncOffsetMs: Number.isFinite(syncOffsetMs) ? syncOffsetMs : 0, sends: JSON.parse(JSON.stringify(sends)) });
     }
     await queue(() => connectInput(i));
     save();
@@ -427,6 +431,21 @@ const ctl = {
   },
 
   refreshDumpDevices: async () => { await refreshDumpDevices(); renderAll(); },
+
+  updateSyncOffset(i, ms) {
+    const cfg = getInput(i);
+    if (!cfg || !Number.isFinite(ms)) return;
+    cfg.syncOffsetMs = Math.round(ms);
+    applyStripParams();
+    rememberStripState(i);
+    save();
+  },
+
+  setAutoSync(on) {
+    state.config.autoSync = !!on;
+    applyStripParams();
+    save();
+  },
 
   updateSend(i, busId, patch) {
     Object.assign(getInput(i).sends[busId], patch);

@@ -88,6 +88,10 @@ pub trait RenderStream {
     fn wait_frames(&mut self, timeout_ms: u32) -> Result<usize, String>;
     /// Write interleaved stereo frames.
     fn write(&mut self, interleaved: &[f32]) -> Result<(), String>;
+    /// Time from writing a frame to the device playing it, when the backend knows it.
+    fn latency_ms(&self) -> Option<f64> {
+        None
+    }
 }
 
 pub trait Backend: Send + Sync + 'static {

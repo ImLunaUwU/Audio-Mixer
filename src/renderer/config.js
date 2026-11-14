@@ -9,7 +9,11 @@ const BUS_IDS = ["monitor", "monitor2", "output"];
 const MIN_DB = -60; // treated as silence (-inf)
 const MAX_INPUT_DB = 24;
 const MAX_BUS_DB = 12;
-const LATENCY_HINTS = ["interactive", "balanced", "playback"];
+// "ultra" (Ultra low) was added in 2.0. Unknown saved values fall back to "balanced".
+const LATENCY_HINTS = ["ultra", "interactive", "balanced", "playback"];
+// Karaoke sync: per-input manual offset on MIX (ms). Negative = earlier than the others.
+const SYNC_OFFSET_MIN = -250;
+const SYNC_OFFSET_MAX = 500;
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const isNum = value => typeof value === "number" && Number.isFinite(value);
@@ -33,6 +37,7 @@ const defaultInput = () => ({
   solo: false,
   forceMono: false,
   dump: false,
+  syncOffsetMs: 0,
   sends: { monitor: defaultSend(), monitor2: defaultSend(), output: defaultSend() }
 });
 
@@ -48,6 +53,7 @@ const DEFAULT_CONFIG = Object.freeze({
   softClip: { enabled: true, thresholdDb: -6 },
   limiter: { enabled: true, ceilingDb: -1 },
   latencyHint: "balanced",
+  autoSync: true,
   showMultichannelDevices: false,
   enforceRoutingSafety: true,
   compactMode: false,
@@ -86,6 +92,7 @@ function normalizeInput(raw) {
     forceMono: !!input.forceMono,
     // DUMP (was "hideFromWindows" in early 2.0 builds).
     dump: bool(input.dump, bool(input.hideFromWindows, false)),
+    syncOffsetMs: Math.round(num(input.syncOffsetMs, 0, SYNC_OFFSET_MIN, SYNC_OFFSET_MAX)),
     sends: {
       monitor: normalizeSend(sends.monitor, legacyMonitorVolume, input.monitorMute),
       monitor2: normalizeSend(
@@ -201,6 +208,7 @@ function migrateConfig(rawConfig) {
       ceilingDb: num(limiter.ceilingDb, -1, -12, 0)
     },
     latencyHint: LATENCY_HINTS.includes(raw.latencyHint) ? raw.latencyHint : "balanced",
+    autoSync: bool(raw.autoSync, true),
     showMultichannelDevices: bool(raw.showMultichannelDevices, false),
     enforceRoutingSafety: bool(raw.enforceRoutingSafety, true),
     compactMode: bool(raw.compactMode, false),
@@ -232,6 +240,9 @@ export {
   MIN_DB,
   MAX_INPUT_DB,
   MAX_BUS_DB,
+  LATENCY_HINTS,
+  SYNC_OFFSET_MIN,
+  SYNC_OFFSET_MAX,
   DEFAULT_CONFIG,
   cloneDefaults,
   defaultInput,

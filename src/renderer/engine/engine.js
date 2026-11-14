@@ -31,8 +31,10 @@ export class MixerEngine {
     this.state = {
       strips: Array.from({ length: inputCount }, () => ({ source: "", enabled: false, gainDb: 0, mute: false, solo: false, forceMono: false, sends: {} })),
       buses: Object.fromEntries(BUS_IDS.map(id => [id, { volumeDb: 0, mute: false, active: false }])),
-      master: {}
+      master: {},
+      autoSync: true
     };
+    this.onSync = null; // (payload) from the engine's "sync" event
     this.levels = {
       inputs: Array.from({ length: inputCount }, () => [-Infinity, -Infinity]),
       buses: Object.fromEntries(BUS_IDS.map(id => [id, [-Infinity, -Infinity, 0]]))
@@ -50,6 +52,7 @@ export class MixerEngine {
       Object.entries(payload?.buses || {}).forEach(([id, v]) => { this.levels.buses[id] = [toDb(v[0]), toDb(v[1]), Math.min(0, v[2] || 0)]; });
       this.levelsAt = performance.now();
     }));
+    this.unsubscribers.push(listen("sync", payload => this.onSync?.(payload)));
     await invoke("engine_set_latency", { hint: this.latencyHint });
     this.flush();
   }
@@ -112,8 +115,15 @@ export class MixerEngine {
       mute: !!cfg.mute,
       solo: !!cfg.solo,
       forceMono: !!cfg.forceMono,
+      syncOffsetMs: Number.isFinite(cfg.syncOffsetMs) ? cfg.syncOffsetMs : 0,
       sends: Object.fromEntries(BUS_IDS.map(id => [id, { on: !!(cfg.sends[id]?.on && busActive[id]), levelDb: cfg.sends[id]?.levelDb ?? 0 }]))
     });
+    this.scheduleFlush();
+  }
+
+  // Karaoke sync on MIX: apps are held back to line up with mics.
+  setAutoSync(on) {
+    this.state.autoSync = !!on;
     this.scheduleFlush();
   }
 

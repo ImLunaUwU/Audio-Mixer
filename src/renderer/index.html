@@ -80,15 +80,18 @@
 
       <section class="panel-section">
         <h3>Audio engine</h3>
-        <label class="row" title="Trade latency for stability. Sets the Web Audio buffer size and the app-capture jitter buffer (which also grows automatically on dropouts). Restarts the engine.">
+        <label class="row" title="Trade latency for stability. Sets the device buffer size and the input jitter buffers (which also grow automatically on dropouts). Restarts the engine.">
           <span>Latency</span>
           <select id="latencyHint" aria-label="Latency / Stability">
+            <option value="ultra">Ultra low (~20 ms apps, ~10 ms mics)</option>
             <option value="interactive">Low latency (~40 ms apps)</option>
             <option value="balanced">Balanced (~60 ms apps)</option>
             <option value="playback">Stable (~100 ms apps)</option>
           </select>
         </label>
         <p class="muted small">Latency / Stability: pick <b>Stable</b> if you hear stutters or crackles.</p>
+        <label class="check" title="When an app (like Spotify) and a mic or line are both sent to MIX, hold the app back on MIX by the time it takes you to hear it and for your voice to come back through the mic. Your monitors (MON 1, MON 2) get no extra delay."><input id="autoSync" type="checkbox"> Karaoke sync (line up apps with mics on MIX)</label>
+        <p class="muted small">Fine-tune each input with its <b>SYNC</b> slider (ms, applies to MIX only). Bluetooth headphones usually need extra delay on the app.</p>
         <label class="check" title="Also list devices with more than 2 channels"><input id="showMultichannel" type="checkbox"> Show multichannel devices</label>
         <label class="check" title="Prevent picking the same device twice and virtual-cable feedback loops"><input id="routingSafety" type="checkbox"> Routing safety (duplicate &amp; loop guard)</label>
       </section>

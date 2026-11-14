@@ -22,6 +22,8 @@ pub struct StripParams {
     pub mono: bool,
     /// Send gains, linear (0 when the send is off or the bus is inactive).
     pub sends: [f32; BUS_COUNT],
+    /// Karaoke sync: manual offset (ms) added to this strip's delay on MIX.
+    pub sync_offset_ms: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,6 +53,8 @@ pub struct MixParams {
     pub strips: Vec<StripParams>,
     pub buses: [BusParams; BUS_COUNT],
     pub master: MasterParams,
+    /// Karaoke sync: line up apps with mics on MIX automatically.
+    pub auto_sync: bool,
 }
 
 impl MixParams {
@@ -59,6 +63,7 @@ impl MixParams {
             strips: vec![StripParams::default(); strips],
             buses: [BusParams { volume: 0.0 }, BusParams { volume: 0.0 }, BusParams { volume: 0.0 }],
             master: MasterParams::default(),
+            auto_sync: true,
         }
     }
 }
@@ -83,6 +88,8 @@ pub struct StripState {
     pub solo: bool,
     pub force_mono: bool,
     pub sends: HashMap<String, SendState>,
+    /// Karaoke sync: manual offset (ms) on MIX.
+    pub sync_offset_ms: f32,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -137,12 +144,25 @@ impl Default for MasterState {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EngineState {
     pub strips: Vec<StripState>,
     pub buses: HashMap<String, BusState>,
     pub master: MasterState,
+    /// Karaoke sync on MIX (on unless the UI says otherwise).
+    #[serde(default = "default_true")]
+    pub auto_sync: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for EngineState {
+    fn default() -> Self {
+        Self { strips: Vec::new(), buses: HashMap::new(), master: MasterState::default(), auto_sync: true }
+    }
 }
 
 fn finite(v: f32, fallback: f32) -> f32 {
@@ -173,6 +193,7 @@ impl EngineState {
                 audible,
                 mono: s.force_mono,
                 sends,
+                sync_offset_ms: finite(s.sync_offset_ms, 0.0).clamp(super::sync::MIN_OFFSET_MS as f32, super::sync::MAX_OFFSET_MS as f32),
             };
         }
         let bus = |b: usize| {
@@ -192,6 +213,7 @@ impl EngineState {
                 limiter: m.limiter.enabled,
                 limiter_ceiling_db: finite(m.limiter.db, -1.0).clamp(-12.0, 0.0),
             },
+            auto_sync: self.auto_sync,
         }
     }
 }
@@ -232,6 +254,24 @@ mod tests {
         assert!(!p.master.soft_clip);
         assert_eq!(p.master.soft_clip_threshold_db, -9.0);
         assert_eq!(p.master.limiter_ceiling_db, -1.0);
+    }
+
+    #[test]
+    fn sync_settings_default_on_and_clamp() {
+        let s = state_json();
+        assert!(s.auto_sync, "auto sync defaults on for saved states without it");
+        let p = s.to_params(3, |_| Some(1));
+        assert!(p.auto_sync);
+        assert_eq!(p.strips[0].sync_offset_ms, 0.0);
+        let s: EngineState = serde_json::from_value(serde_json::json!({
+            "autoSync": false,
+            "strips": [{ "source": "mic", "enabled": true, "syncOffsetMs": 9000 }, { "source": "mic", "enabled": true, "syncOffsetMs": -40 }]
+        }))
+        .unwrap();
+        let p = s.to_params(3, |_| Some(1));
+        assert!(!p.auto_sync);
+        assert_eq!(p.strips[0].sync_offset_ms, 500.0);
+        assert_eq!(p.strips[1].sync_offset_ms, -40.0);
     }
 
     #[test]

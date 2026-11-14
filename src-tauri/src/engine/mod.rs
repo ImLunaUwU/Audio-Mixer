@@ -10,6 +10,7 @@
 pub mod backend;
 pub mod mixer;
 pub mod state;
+pub mod sync;
 
 use crate::dsp::jitter::AdaptiveRing;
 use crate::dsp::meter::LevelAccum;
@@ -19,7 +20,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use state::{EngineState, MixParams, BUS_COUNT, BUS_IDS};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use sync::SourceKind;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -35,9 +37,13 @@ pub type EventSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LatencyProfile {
-    /// Input jitter buffer target / floor.
+    /// App (process loopback) jitter buffer target / floor.
     pub target_ms: f64,
     pub min_target_ms: f64,
+    /// Device input (mic, line) jitter buffer target / floor. Devices deliver on a steady
+    /// clock, so they can run a smaller buffer than process loopback.
+    pub device_target_ms: f64,
+    pub device_min_ms: f64,
     /// Secondary output buffer target / floor.
     pub output_target_ms: f64,
     pub output_min_ms: f64,
@@ -45,12 +51,58 @@ pub struct LatencyProfile {
     pub device_buffer_ms: u32,
 }
 
+/// Saved hint values, lowest latency first ("ultra" was added in 2.0; unknown values fall
+/// back to "balanced").
+pub const LATENCY_HINTS: [&str; 4] = ["ultra", "interactive", "balanced", "playback"];
+
 impl LatencyProfile {
     pub fn from_hint(hint: &str) -> Self {
         match hint {
-            "interactive" => Self { target_ms: 40.0, min_target_ms: 25.0, output_target_ms: 25.0, output_min_ms: 15.0, device_buffer_ms: 10 },
-            "playback" => Self { target_ms: 100.0, min_target_ms: 70.0, output_target_ms: 60.0, output_min_ms: 40.0, device_buffer_ms: 40 },
-            _ => Self { target_ms: 60.0, min_target_ms: 40.0, output_target_ms: 40.0, output_min_ms: 25.0, device_buffer_ms: 20 },
+            // ~20 ms apps, ~10 ms devices. Every buffer still grows on its own after a dropout.
+            "ultra" => Self {
+                target_ms: 20.0,
+                min_target_ms: 15.0,
+                device_target_ms: 10.0,
+                device_min_ms: 10.0,
+                output_target_ms: 15.0,
+                output_min_ms: 10.0,
+                device_buffer_ms: 10,
+            },
+            "interactive" => Self {
+                target_ms: 40.0,
+                min_target_ms: 25.0,
+                device_target_ms: 40.0,
+                device_min_ms: 25.0,
+                output_target_ms: 25.0,
+                output_min_ms: 15.0,
+                device_buffer_ms: 10,
+            },
+            "playback" => Self {
+                target_ms: 100.0,
+                min_target_ms: 70.0,
+                device_target_ms: 100.0,
+                device_min_ms: 70.0,
+                output_target_ms: 60.0,
+                output_min_ms: 40.0,
+                device_buffer_ms: 40,
+            },
+            _ => Self {
+                target_ms: 60.0,
+                min_target_ms: 40.0,
+                device_target_ms: 60.0,
+                device_min_ms: 40.0,
+                output_target_ms: 40.0,
+                output_min_ms: 25.0,
+                device_buffer_ms: 20,
+            },
+        }
+    }
+
+    /// Jitter buffer (target, floor) for an input of this kind.
+    pub fn input_target(&self, kind: SourceKind) -> (f64, f64) {
+        match kind {
+            SourceKind::App => (self.target_ms, self.min_target_ms),
+            SourceKind::Device => (self.device_target_ms, self.device_min_ms),
         }
     }
 }
@@ -95,6 +147,8 @@ struct Shared {
     /// true while the primary output stream is open
     primary_ok: AtomicBool,
     meters_enabled: AtomicBool,
+    /// Secondary outputs: device latency + output buffer target (ms), 0 = unknown.
+    out_latency_ms: [AtomicU32; BUS_COUNT],
 }
 
 pub struct Engine {
@@ -126,6 +180,7 @@ impl Engine {
             names: Mutex::new(HashMap::new()),
             primary_ok: AtomicBool::new(false),
             meters_enabled: AtomicBool::new(true),
+            out_latency_ms: Default::default(),
         });
         let latency = LatencyProfile::from_hint(latency_hint);
         let (tx, rx) = channel();
@@ -254,9 +309,13 @@ impl Engine {
         } else {
             let key = self.next_key;
             self.next_key += 1;
-            let l = self.latency;
-            let ring = AdaptiveRing::new(ENGINE_RATE, ENGINE_RATE, l.target_ms, l.min_target_ms);
-            let _ = self.tx.send(MixMsg::AddSource(SourceSlot::new(key, ring, Some(consumer))));
+            let kind = match spec {
+                CaptureSpec::App(_) => SourceKind::App,
+                CaptureSpec::Device(_) => SourceKind::Device,
+            };
+            let (target, floor) = self.latency.input_target(kind);
+            let ring = AdaptiveRing::new(ENGINE_RATE, ENGINE_RATE, target, floor);
+            let _ = self.tx.send(MixMsg::AddSource(SourceSlot::new(key, ring, Some(consumer)).with_kind(kind)));
             self.shared.names.lock().unwrap().insert(key, source_id.to_string());
             self.sources.insert(source_id.to_string(), OpenSource { key, handle });
         }
@@ -336,9 +395,10 @@ impl Engine {
             let alive = alive.clone();
             let events = self.events.clone();
             let latency = self.latency;
+            let shared = self.shared.clone();
             std::thread::Builder::new()
                 .name(format!("output-{}", BUS_IDS[bus]))
-                .spawn(move || output_thread(backend, device, bus, consumer, latency, stop, alive, init_tx, events))
+                .spawn(move || output_thread(backend, device, bus, consumer, latency, stop, alive, init_tx, events, shared))
                 .map_err(|e| e.to_string())?
         };
         let result = init_rx.recv_timeout(Duration::from_secs(8)).unwrap_or_else(|_| Err("the output device did not respond".into()));
@@ -450,7 +510,8 @@ fn mix_thread(backend: Arc<dyn Backend>, rx: Receiver<MixMsg>, shared: Arc<Share
                 MixMsg::Latency(l) => {
                     latency = l;
                     for src in mixer.sources.iter_mut() {
-                        src.ring.configure(l.target_ms, l.min_target_ms);
+                        let (target, floor) = l.input_target(src.kind);
+                        src.ring.configure(target, floor);
                     }
                 }
                 MixMsg::SetPrimary { target, reply } => {
@@ -475,6 +536,22 @@ fn mix_thread(backend: Arc<dyn Backend>, rx: Receiver<MixMsg>, shared: Arc<Share
                 MixMsg::Stop => return,
             }
         }
+
+        // output latency per bus, for the karaoke sync on MIX
+        let mut out_ms: [Option<f64>; BUS_COUNT] = [None; BUS_COUNT];
+        for (b, slot) in out_ms.iter_mut().enumerate() {
+            if let Some((pb, _, stream)) = primary.as_ref() {
+                if *pb == b {
+                    *slot = Some(stream.latency_ms().unwrap_or(latency.device_buffer_ms as f64));
+                    continue;
+                }
+            }
+            if secondaries[b].is_some() {
+                let ms = shared.out_latency_ms[b].load(Ordering::Relaxed);
+                *slot = Some(if ms > 0 { ms as f64 } else { latency.device_buffer_ms as f64 + latency.output_target_ms });
+            }
+        }
+        mixer.set_bus_latency(out_ms);
 
         // how many frames to mix now
         let frames = match primary.as_mut() {
@@ -543,6 +620,7 @@ fn output_thread(
     alive: Arc<AtomicBool>,
     init: Sender<Result<(), String>>,
     events: EventSink,
+    shared: Arc<Shared>,
 ) {
     backend.thread_init();
     let mut stream = match backend.open_render(&device_id, latency.device_buffer_ms) {
@@ -557,6 +635,7 @@ fn output_thread(
         }
     };
     let mut ring = AdaptiveRing::new(ENGINE_RATE, stream.rate(), latency.output_target_ms, latency.output_min_ms);
+    let device_ms = stream.latency_ms().unwrap_or(latency.device_buffer_ms as f64);
     let mut l = vec![0f32; 8192];
     let mut r = vec![0f32; 8192];
     let mut out = vec![0f32; 16384];
@@ -583,6 +662,8 @@ fn output_thread(
                 chunk.commit_all();
             }
         }
+        let total = device_ms + ring.target() as f64 / ENGINE_RATE * 1000.0;
+        shared.out_latency_ms[bus].store(total.round().max(1.0) as u32, Ordering::Relaxed);
         if n == 0 {
             continue;
         }
@@ -596,6 +677,7 @@ fn output_thread(
         }
     }
     alive.store(false, Ordering::Release);
+    shared.out_latency_ms[bus].store(0, Ordering::Relaxed);
 }
 
 fn db_json(v: f32) -> Value {
@@ -647,6 +729,8 @@ fn meter_thread(shared: Arc<Shared>, events: EventSink, stop: Arc<AtomicBool>) {
                     );
                 }
             }
+            let sync: Vec<Value> = snapshot.sync_ms.iter().map(|v| json!(v.round())).collect();
+            events("sync", json!({ "auto": snapshot.sync_auto, "mixDelayMs": sync }));
         }
     }
 }
@@ -660,6 +744,24 @@ mod tests {
         let store = Arc::new(Mutex::new(Vec::new()));
         let s = store.clone();
         (Arc::new(move |name: &str, v: Value| s.lock().unwrap().push((name.to_string(), v))), store)
+    }
+
+    #[test]
+    fn ultra_low_preset() {
+        let u = LatencyProfile::from_hint("ultra");
+        assert_eq!(u.input_target(SourceKind::App), (20.0, 15.0));
+        assert_eq!(u.input_target(SourceKind::Device), (10.0, 10.0));
+        assert_eq!(u.device_buffer_ms, 10);
+        // lowest of all presets, in every buffer
+        for hint in ["interactive", "balanced", "playback"] {
+            let p = LatencyProfile::from_hint(hint);
+            assert!(u.target_ms < p.target_ms && u.device_target_ms < p.device_target_ms && u.output_target_ms < p.output_target_ms, "{hint}");
+        }
+        // older presets unchanged
+        let i = LatencyProfile::from_hint("interactive");
+        assert_eq!((i.target_ms, i.min_target_ms, i.output_target_ms, i.device_buffer_ms), (40.0, 25.0, 25.0, 10));
+        assert_eq!(LatencyProfile::from_hint("nonsense"), LatencyProfile::from_hint("balanced"));
+        assert!(LATENCY_HINTS.iter().all(|h| *h == "balanced" || LatencyProfile::from_hint(h) != LatencyProfile::from_hint("balanced")));
     }
 
     #[test]
@@ -694,6 +796,9 @@ mod tests {
         let bus_peak = last["buses"]["output"][0].as_f64().unwrap();
         assert!(bus_peak > -30.0, "and the MIX bus: {last}");
         assert!(ev.iter().any(|(n, _)| n == "source-stats"));
+        let sync = ev.iter().rev().find(|(n, _)| n == "sync").map(|(_, v)| v.clone()).expect("sync event");
+        assert_eq!(sync["mixDelayMs"].as_array().unwrap().len(), STRIP_COUNT);
+        assert_eq!(sync["auto"], false, "only a mic on MIX: nothing to align");
         engine.release_source(&mic);
         assert!(!engine.is_live(&mic));
         engine.shutdown();

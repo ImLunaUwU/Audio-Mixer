@@ -59,7 +59,7 @@ The engine runs at 48 kHz in 32-bit float. WASAPI converts other device rates in
 
 - **Real audio threads.** Capture, mixing and output each run on their own native thread (MMCSS "Pro Audio" priority on Windows), connected by lock-free ring buffers. The UI only sends parameter changes and receives meters (about 30 per second), so UI work can never stall audio.
 - **Fewer clock domains.** The first active output drives the mixer on its own device clock. Only the extra outputs get an adaptive buffer.
-- **Adaptive jitter buffer** on every input and every extra output. It plays after about 40, 60 or 100 ms of audio is buffered, depending on the Latency / Stability profile.
+- **Adaptive jitter buffer** on every input and every extra output. It plays after about 20, 40, 60 or 100 ms of audio is buffered, depending on the Latency / Stability profile.
   - **Dropouts:** after a dropout, the target grows x1.5, up to 400 ms. After 20 s without a dropout, it slowly shrinks back.
   - **Quiet gaps are not dropouts.** An app that pauses or stops sending audio is shown as a *quiet gap* and doesn't grow the buffer.
   - **Clock drift** between devices is absorbed by nudging the playback rate (at most +/-0.5 %, inaudible, cubic interpolation).
@@ -68,11 +68,20 @@ The engine runs at 48 kHz in 32-bit float. WASAPI converts other device rates in
 
 | Profile | Input buffer | Extra outputs | WASAPI buffer |
 | --- | --- | --- | --- |
+| Ultra low | apps ~20 ms (min 15), mics/lines ~10 ms | ~15 ms | 10 ms |
 | Low latency | ~40 ms (min 25) | ~25 ms | 10 ms |
 | Balanced (default) | ~60 ms (min 40) | ~40 ms | 20 ms |
 | Stable | ~100 ms (min 70) | ~60 ms | 40 ms |
 
 Hover an app input's status light to see its live buffer level, dropout count and drift correction.
+
+## Karaoke sync
+
+Sing over Spotify (or any app) and have your stream hear you in time with the music.
+
+When you sing along, you follow the music as you hear it in your headphones, and your voice then needs a moment to come back in through the mic. So on the MIX output the voice would trail the music by (headphone output latency + mic input latency). With **Karaoke sync** on (Settings > Audio engine, on by default), the engine measures both from its own buffers and holds the app back by that amount **on MIX only**. MON 1 and MON 2 are never delayed, so what you hear stays as fast as possible. It only kicks in when an app and a mic or line are both sent to MIX.
+
+Each input has a **SYNC** slider (ms, MIX only, double-click for 0) to fine-tune things the engine cannot measure, such as Bluetooth headphones. If you sound late against the music on your stream, raise the app's SYNC; if early, lower it (or raise the mic's). Hover the slider to see the delay applied right now.
 
 ## Keyboard shortcuts
 

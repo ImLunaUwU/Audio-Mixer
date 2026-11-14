@@ -2,6 +2,7 @@
 //! piece is unit-tested on any platform (`cargo test`).
 
 pub mod biquad;
+pub mod delay;
 pub mod jitter;
 pub mod limiter;
 pub mod meter;

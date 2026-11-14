@@ -2,6 +2,8 @@
 import { h, toggleButton } from "./dom.js";
 import { createFader, createMeter } from "./fader.js";
 import { formatDb, MIN_DB } from "../engine/dsp.js";
+import { SYNC_OFFSET_MIN, SYNC_OFFSET_MAX } from "../config.js";
+import { formatMs, syncTitle } from "../sync.js";
 
 export const BUS_LABELS = {
   monitor: { short: "MON 1", name: "Monitor 1", title: "Monitor 1 bus: usually your headphones" },
@@ -63,6 +65,21 @@ export function createInputStrip(index, ctl) {
     return h("div", { class: "send-row" }, btn, level, value);
   }));
 
+  // Karaoke sync: manual offset on MIX (the auto part is shown in the tooltip).
+  const syncLevel = h("input", { type: "range", class: "send-level sync-level", min: String(SYNC_OFFSET_MIN), max: String(SYNC_OFFSET_MAX), step: "1", "aria-label": `Input ${index + 1} sync offset on MIX (ms)` });
+  const syncValue = h("span", { class: "send-value" });
+  const syncRow = h("div", { class: "send-row sync-row" }, h("span", { class: "sync-label" }, "SYNC"), syncLevel, syncValue);
+  let syncInfo = { auto: false, delayMs: 0 };
+  const renderSync = () => {
+    const offset = Number(syncLevel.value);
+    syncValue.textContent = formatMs(offset);
+    syncRow.dataset.active = String(syncInfo.delayMs > 0);
+    syncRow.title = syncTitle({ offsetMs: offset, delayMs: syncInfo.delayMs, auto: syncInfo.auto });
+  };
+  syncLevel.addEventListener("input", () => { renderSync(); ctl.updateSyncOffset(index, Number(syncLevel.value)); });
+  syncLevel.addEventListener("dblclick", () => { syncLevel.value = "0"; syncLevel.dispatchEvent(new Event("input")); });
+  sends.append(syncRow);
+
   const meter = createMeter();
   const fader = createFader({
     label: `Input ${index + 1} gain`,
@@ -114,6 +131,8 @@ export function createInputStrip(index, ctl) {
         row.level.value = String(send.levelDb);
         row.value.textContent = formatDb(send.levelDb, { unit: "" });
       });
+      syncLevel.value = String(c.syncOffsetMs || 0);
+      renderSync();
       el.classList.toggle("disabled", !c.enabled);
       el.classList.toggle("empty", !c.deviceId);
       el.classList.toggle("selected", !!selected);
@@ -136,6 +155,7 @@ export function createInputStrip(index, ctl) {
       dump.title = title;
     },
     renderMeter(channel) { meter.render(channel); },
+    updateSync(info) { syncInfo = info; renderSync(); },
     setStatusTitle(message) { statusDot.title = message; }
   };
 }
