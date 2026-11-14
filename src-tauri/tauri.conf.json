@@ -18,7 +18,7 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico", "icons/icon.png"],
-    "category": "Audio",
+    "category": "Music",
     "shortDescription": "Audio routing and mixing with per-app capture",
     "longDescription": "Luna's Audio Mixer: route devices and applications to up to three outputs with sends, meters, EQ, soft clipping and a peak limiter.",
     "copyright": "Copyright (c) 2026 Luna. All rights reserved.",
