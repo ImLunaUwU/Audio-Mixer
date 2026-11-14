@@ -6,21 +6,24 @@ use std::collections::{BTreeMap, HashMap};
 use windows::core::{BOOL, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, WAIT_OBJECT_0};
 use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
-use windows::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOW};
+use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE};
 use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER};
 
 /// Process loopback needs Windows 10 2004 (build 19041) or newer.
+/// Uses RtlGetVersion, which reports the real version regardless of the app manifest
+/// (GetVersionEx reports Windows 8 without a supportedOS entry, hiding app capture).
 pub fn process_loopback_supported() -> bool {
     if !cfg!(target_arch = "x86_64") {
         return false;
     }
-    // GetVersionEx lies without a manifest entry, but Tauri's manifest declares Windows 10
-    // compatibility, so the build number is real.
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(info: *mut OSVERSIONINFOW) -> i32;
+    }
     let mut info = OSVERSIONINFOW { dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32, ..Default::default() };
-    #[allow(deprecated)]
-    let ok = unsafe { GetVersionExW(&mut info) }.is_ok();
-    !ok || info.dwMajorVersion > 10 || (info.dwMajorVersion == 10 && info.dwBuildNumber >= 19041)
+    let status = unsafe { RtlGetVersion(&mut info) };
+    status != 0 || info.dwMajorVersion > 10 || (info.dwMajorVersion == 10 && info.dwBuildNumber >= 19041)
 }
 
 unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
