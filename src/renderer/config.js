@@ -1,4 +1,5 @@
-"use strict";
+// (Moved from the Electron main process: the UI now owns settings normalisation.)
+
 
 // Config schema + migration. Pure module (no Electron imports) so it can be unit-tested.
 
@@ -224,7 +225,7 @@ function migrateDeviceStates(raw) {
   return result;
 }
 
-module.exports = {
+export {
   CONFIG_VERSION,
   INPUT_COUNT,
   BUS_IDS,

@@ -28,6 +28,20 @@ export class MeterChannel {
     this.clipped = now < this.clipUntil;
   }
 
+  // Levels measured in the Rust engine (peak and RMS in dB over the last ~33 ms).
+  updateLevels(peakIn, rmsIn, now, elapsedSec) {
+    const peakDb = Number.isFinite(peakIn) ? peakIn : -Infinity;
+    const rmsDb = Number.isFinite(rmsIn) ? rmsIn : -Infinity;
+    this.peakDb = decayMeter(this.peakDb, peakDb, elapsedSec, 30);
+    this.rmsDb = decayMeter(this.rmsDb, rmsDb, elapsedSec, 18);
+    if (peakDb >= this.holdDb || now > this.holdUntil) {
+      this.holdDb = Number.isFinite(peakDb) ? Math.max(peakDb, MIN_DB) : MIN_DB;
+      this.holdUntil = now + PEAK_HOLD_MS;
+    }
+    if (peakDb >= CLIP_DB) this.clipUntil = now + CLIP_HOLD_MS;
+    this.clipped = now < this.clipUntil;
+  }
+
   clearClip() {
     this.clipUntil = 0;
     this.clipped = false;

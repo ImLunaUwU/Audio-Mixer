@@ -2,15 +2,22 @@
 import { inferChannelsFromLabel, getCableDescriptor } from "./engine/dsp.js";
 import { APP_PREFIX } from "./engine/sources.js";
 
-const RESERVED = new Set(["default", "communications"]);
-
+// Windows endpoints from the Rust engine (WASAPI). Device ids are Windows endpoint ids, so
+// they are the same ids DUMP uses. Channel counts are inferred from the label like the
+// Electron build did, so the multichannel filter hides the same devices.
 export async function enumerateDevices({ showMultichannel }) {
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const pick = kind => devices
-    .filter(d => d.kind === kind && !RESERVED.has(d.deviceId) && d.deviceId)
-    .map(d => ({ deviceId: d.deviceId, label: d.label || (kind === "audioinput" ? "Unnamed input" : "Unnamed output"), kind, channels: inferChannelsFromLabel(d.label) }))
+  const devices = await window.mixerAPI.devices.list();
+  const pick = flow => (devices || [])
+    .filter(d => d.flow === flow && d.id)
+    .map(d => ({
+      deviceId: d.id,
+      label: d.name || (flow === "capture" ? "Unnamed input" : "Unnamed output"),
+      kind: flow === "capture" ? "audioinput" : "audiooutput",
+      channels: inferChannelsFromLabel(d.name),
+      isDefault: !!d.isDefault
+    }))
     .filter(d => showMultichannel || d.channels <= 2);
-  return { inputs: pick("audioinput"), outputs: pick("audiooutput") };
+  return { inputs: pick("capture"), outputs: pick("render") };
 }
 
 export async function listApps(appAudio) {
@@ -41,10 +48,25 @@ export function appDisplayName(app) {
   return exe || app.title || `PID ${app.pid}`;
 }
 
-// Find a stand-in for a device/app that disappeared: match by stored label.
+// Chromium (Electron build) labels can carry a "Default - " / "Communications - " prefix and
+// a USB " (046d:0a8f)" suffix that the Windows friendly name does not have.
+export function normalizeLabel(label) {
+  return String(label || "")
+    .trim()
+    .replace(/^(default|communications)\s+-\s+/i, "")
+    .replace(/\s+\([0-9a-f]{4}:[0-9a-f]{4}\)$/i, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+// Find a stand-in for a device/app that disappeared: match by stored label. Settings saved
+// by the Electron build hold Chromium device ids, so this is also how they carry over.
 export function findReplacement(label, candidates, usedIds = new Set()) {
   if (!label) return "";
-  const match = candidates.find(c => c.label === label && !usedIds.has(c.deviceId));
+  const exact = candidates.find(c => c.label === label && !usedIds.has(c.deviceId));
+  if (exact) return exact.deviceId;
+  const wanted = normalizeLabel(label);
+  const match = candidates.find(c => normalizeLabel(c.label) === wanted && !usedIds.has(c.deviceId));
   return match ? match.deviceId : "";
 }
 

@@ -1,49 +1,21 @@
 {
   "name": "audio-mixer",
   "version": "2.0.0",
+  "private": true,
   "description": "Desktop audio routing and mixing app with per-application capture.",
   "author": "Luna",
-  "main": "src/main/index.js",
   "productName": "Audio Mixer",
+  "type": "module",
   "scripts": {
-    "start": "electron .",
-    "test": "node --test",
-    "check": "node scripts/check-syntax.js",
-    "make": "electron-forge make",
-    "make-debug": "cross-env DEBUG=electron-forge:* electron-forge make"
-  },
-  "build": {
-    "appId": "dev.imluna.audio-mixer",
-    "productName": "Audio Mixer",
-    "asar": {
-      "unpack": "{**/*.json,**/application-loopback/bin/**}"
-    },
-    "files": [
-      "**/*",
-      "!config.json"
-    ],
-    "directories": {
-      "output": "dist"
-    },
-    "ignore": [
-      "node_modules/.cache",
-      "node_modules/electron",
-      "node_modules/electron-rebuild",
-      "node_modules/@electron-forge/*"
-    ]
+    "dev": "tauri dev",
+    "test": "node --test \"test/*.test.mjs\" && cd src-tauri && cargo test",
+    "test:ui": "node --test \"test/*.test.mjs\"",
+    "test:rust": "cd src-tauri && cargo test",
+    "check": "node scripts/check-syntax.cjs",
+    "build": "tauri build",
+    "build:windows": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis"
   },
   "devDependencies": {
-    "@electron-forge/cli": "^7.7.0",
-    "@electron-forge/maker-squirrel": "^7.7.0",
-    "@electron-forge/maker-zip": "^7.7.0",
-    "@electron-forge/plugin-auto-unpack-natives": "^7.7.0",
-    "@electron/fuses": "^1.8.0",
-    "@electron/rebuild": "^3.7.1",
-    "electron": "^34.3.0",
-    "electron-winstaller": "^5.4.0"
-  },
-  "dependencies": {
-    "application-loopback": "^1.2.7",
-    "electron-squirrel-startup": "^1.0.1"
+    "@tauri-apps/cli": "^2"
   }
 }

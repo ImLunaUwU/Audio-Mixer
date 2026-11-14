@@ -1,6 +1,6 @@
-const test = require("node:test");
-const assert = require("node:assert");
-const { migrateConfig, migrateDeviceStates, CONFIG_VERSION, linearToDb } = require("../src/main/config");
+import test from "node:test";
+import assert from "node:assert";
+import { migrateConfig, migrateDeviceStates, CONFIG_VERSION, linearToDb } from "../src/renderer/config.js";
 
 const v3 = {
   version: 3,

@@ -1,8 +1,9 @@
 // Renderer entry: owns state and wires the engine, sources, devices and UI together.
+import "./tauriBridge.js";
 import { MixerEngine, BUS_IDS } from "./engine/engine.js";
 import { SourceManager, isAppSource } from "./engine/sources.js";
 import { MeterChannel, MeterLoop } from "./engine/meters.js";
-import { enumerateDevices, listApps, findReplacement, computeDisabledOptions } from "./devices.js";
+import { enumerateDevices, listApps, findReplacement, computeDisabledOptions, normalizeLabel } from "./devices.js";
 import { createInputStrip, createBusStrip, BUS_LABELS } from "./ui/mixer.js";
 import { initSettings } from "./ui/settings.js";
 import { initPresets } from "./ui/presets.js";
@@ -14,7 +15,8 @@ import { resolveDumpDevice, dumpDeviceOptions, buildDumpRequest } from "./dump.j
 const api = window.mixerAPI;
 const APP_POLL_MS = 5000;
 
-// "Latency / Stability" profiles: Web Audio latency hint + app-capture jitter buffer.
+// "Latency / Stability" profiles. The Rust engine owns the numbers (input jitter buffer,
+// secondary output buffer, WASAPI buffer size); these are shown in the UI only.
 export const LATENCY_PROFILES = {
   interactive: { targetMs: 40, minTargetMs: 25 },
   balanced: { targetMs: 60, minTargetMs: 40 },
@@ -103,11 +105,8 @@ async function startEngine() {
   engine = new MixerEngine({ latencyHint: state.config.latencyHint, inputCount: inputCount() });
   await engine.init();
   sources = new SourceManager({
-    ctxProvider: () => engine.ctx,
-    appAudio: api.appAudio,
     onEnded: (sourceId, reason) => handleSourceEnded(sourceId, reason),
-    onAppStats: (sourceId, stats) => handleAppStats(sourceId, stats),
-    getBufferSettings: () => LATENCY_PROFILES[state.config.latencyHint] || LATENCY_PROFILES.balanced
+    onAppStats: (sourceId, stats) => handleAppStats(sourceId, stats)
   });
   applyMasterProcessing();
   for (let i = 0; i < inputCount(); i++) await connectInput(i);
@@ -152,7 +151,7 @@ async function applyBuses() {
 
 async function connectInput(i) {
   const cfg = getInput(i);
-  engine.setStripStream(i, null);
+  engine.setStripSource(i, null);
   sources.releaseAllExcept(state.config.inputs.filter(c => c.enabled && findInputSource(c.deviceId)).map(c => c.deviceId));
   if (!cfg.deviceId) { status(i, "idle", "No source selected"); return; }
   if (!cfg.enabled) { status(i, "off", "Input disabled"); return; }
@@ -161,9 +160,8 @@ async function connectInput(i) {
     return;
   }
   try {
-    const opened = await sources.open(cfg.deviceId);
-    if (opened.kind === "node") engine.setStripNode(i, opened.node);
-    else engine.setStripStream(i, opened.stream);
+    await sources.open(cfg.deviceId);
+    engine.setStripSource(i, cfg.deviceId);
     status(i, "live", `${cfg.label}: live`);
   } catch (error) {
     status(i, "error", `${cfg.label || "Source"}: ${error.message || error}`);
@@ -229,6 +227,7 @@ async function reconcile({ notify }) {
       const replacement = findReplacement(cfg.label, candidatesFor(cfg), used);
       if (replacement) {
         cfg.deviceId = replacement;
+        cfg.label = findInputSource(replacement)?.label || cfg.label;
         if (notify) toast(`Input ${i + 1}: reconnected to ${cfg.label}.`, "success");
       } else if (wasLive && notify) {
         toast(`Input ${i + 1}: ${cfg.label || "source"} disconnected. It will reconnect automatically.`, "error");
@@ -244,6 +243,7 @@ async function reconcile({ notify }) {
       const replacement = findReplacement(bus.label, state.devices.outputs);
       if (replacement) {
         bus.deviceId = replacement;
+        bus.label = findOutput(replacement)?.label || bus.label;
         if (notify) toast(`${BUS_LABELS[id].name}: reconnected to ${bus.label}.`, "success");
       } else if (notify) {
         toast(`${BUS_LABELS[id].name}: ${bus.label || "device"} disconnected.`, "error");
@@ -363,7 +363,10 @@ const ctl = {
     const source = findInputSource(deviceId);
     cfg.deviceId = deviceId;
     cfg.label = source ? source.label : "";
-    const remembered = state.deviceStates[stateKey(cfg)];
+    // Exact key first; Electron-era entries are keyed by Chromium ids, so fall back to the label.
+    const remembered = state.deviceStates[stateKey(cfg)] || (!isAppSource(deviceId) && cfg.label
+      ? Object.values(state.deviceStates).find(s => !String(s.deviceId).startsWith("app-exe:") && normalizeLabel(s.label) === normalizeLabel(cfg.label))
+      : null);
     if (remembered) {
       const { gainDb, mute, solo, forceMono, sends, dump } = remembered;
       Object.assign(cfg, { gainDb, mute, solo, forceMono, dump: !!dump, sends: JSON.parse(JSON.stringify(sends)) });
@@ -546,17 +549,17 @@ function renderAll() {
 
 function renderMeters(now, elapsed) {
   if (!engine?.ctx) return;
-  engine.strips.forEach((strip, i) => {
-    const live = strip.source !== null;
-    strip.meter.analyser.getFloatTimeDomainData(strip.meter.buffer);
-    meters.inputs[i].update(live ? strip.meter.buffer : null, now, elapsed);
+  // Stale levels (engine paused, window was hidden) decay to silence.
+  const fresh = now - engine.levelsAt < 250;
+  state.config.inputs.forEach((_, i) => {
+    const [peak, rms] = fresh && engine.hasSource(i) ? engine.levels.inputs[i] : [-Infinity, -Infinity];
+    meters.inputs[i].updateLevels(peak, rms, now, elapsed);
     inputStrips[i].renderMeter(meters.inputs[i]);
   });
   BUS_IDS.forEach(id => {
-    const bus = engine.buses[id];
-    bus.meter.analyser.getFloatTimeDomainData(bus.meter.buffer);
-    meters.buses[id].update(bus.meter.buffer, now, elapsed);
-    busStrips[id].renderMeter(meters.buses[id], bus.gainReductionDb);
+    const [peak, rms, gr] = fresh ? engine.levels.buses[id] : [-Infinity, -Infinity, 0];
+    meters.buses[id].updateLevels(peak, rms, now, elapsed);
+    busStrips[id].renderMeter(meters.buses[id], gr);
   });
 }
 
@@ -618,22 +621,22 @@ async function boot() {
     buildUi();
     setStatus("Starting audio engine…");
 
-    // Device labels are only exposed after a capture permission grant.
-    try {
-      const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
-      probe.getTracks().forEach(t => t.stop());
-    } catch (_) {}
-
     await queue(startEngine);
     await refreshDevices({ notify: false });
     new MeterLoop(renderMeters).start();
 
-    navigator.mediaDevices.addEventListener("devicechange", debounce(() => {
+    api.devices.onChanged(debounce(() => {
       setStatus("Audio devices changed…");
       refreshDevices({ notify: true });
     }, 400));
+    api.devices.onOutputError(({ bus, message } = {}) => {
+      const name = BUS_LABELS[bus]?.name || "Output";
+      reportError("Output", new Error(message || "stopped"), `${name}: the output device stopped`);
+      scheduleRefresh();
+    });
+    if (api.appAudio.onRerouted) api.appAudio.onRerouted(() => {});
     api.app.onCommand(command => { if (command === "toggleMuteAll") ctl.toggleMuteAll(); });
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) engine?.resume(); });
+    document.addEventListener("visibilitychange", () => engine?.setMeters(!document.hidden));
     window.addEventListener("beforeunload", () => sources?.dispose());
     setStatus("Ready");
   } catch (error) {

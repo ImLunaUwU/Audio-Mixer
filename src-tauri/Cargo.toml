@@ -1,0 +1,43 @@
+[package]
+name = "audio-mixer"
+version = "2.0.0"
+description = "Desktop audio routing and mixing app with per-application capture."
+authors = ["Luna"]
+edition = "2021"
+rust-version = "1.90"
+
+[lib]
+name = "audio_mixer_lib"
+crate-type = ["lib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rtrb = "0.3"
+log = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.27"
+windows-link = "0.2"
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_System_WinRT",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
+panic = "abort"

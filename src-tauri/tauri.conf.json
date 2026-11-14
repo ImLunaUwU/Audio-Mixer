@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Audio Mixer",
+  "mainBinaryName": "AudioMixer",
+  "version": "2.0.0",
+  "identifier": "dev.imluna.audio-mixer",
+  "build": {
+    "frontendDist": "../src/renderer"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico", "icons/icon.png"],
+    "category": "Audio",
+    "shortDescription": "Audio routing and mixing with per-app capture",
+    "longDescription": "Luna's Audio Mixer: route devices and applications to up to three outputs with sends, meters, EQ, soft clipping and a peak limiter.",
+    "copyright": "Copyright (c) 2026 Luna. All rights reserved.",
+    "publisher": "Luna",
+    "windows": {
+      "allowDowngrades": true,
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  }
+}

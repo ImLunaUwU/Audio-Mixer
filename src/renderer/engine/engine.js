@@ -1,274 +1,136 @@
-// Mixer audio engine: a modular Web Audio graph.
+// Mixer engine client. All audio runs in the Rust engine (WASAPI capture/render, 32-bit
+// float mixing, EQ, drive, soft clip, limiter, metering). This class keeps the same method
+// surface the Web Audio engine had, collects the desired state and sends it to Rust.
 //
-//  Strip (per input, identical for hardware devices and applications):
-//    source -> [stereo | mono-sum] -> trim (gain dB, up to +24) -> mute/solo -> post-fader tap
-//           -> send[monitor|monitor2|output] -> bus input
-//
-//  Bus (per output):
-//    input (sum) -> EQ low/mid/high -> drive -> fader -> soft clipper (optional)
-//           -> lookahead limiter (optional) -> meter tap
-//           -> output: the first active bus plays directly from the engine context
-//              (ctx.setSinkId), so its clock drives the whole graph; additional buses
-//              go through MediaStreamDestination -> their own AudioContext + setSinkId.
-//
-// Clock drift: every extra AudioContext runs on its own device clock. Keeping the
-// primary bus on the engine context removes one resampling hop and one clock domain
-// for the most common setup (one output); Chromium's MediaStream bridge absorbs the
-// drift for the others.
-//
-// Every parameter change goes through setTargetAtTime ramps to avoid zipper noise.
-
-import { dbToGain, buildSoftClipCurve, SOFT_CLIP_RANGE } from "./dsp.js";
-import { loadWorklets } from "./worklets.js";
+//  Strip: source -> [stereo | mono sum] -> trim (dB, up to +24) -> mute/solo -> meter
+//         -> send[MON 1 | MON 2 | MIX] -> bus
+//  Bus:   sum -> EQ low/mid/high -> drive -> fader -> soft clipper -> limiter -> meter -> device
 
 export const BUS_IDS = ["monitor", "monitor2", "output"];
-const RAMP_TC = 0.015; // seconds (≈ 50 ms to settle)
-const SAMPLE_RATE = 48000; // matches app-capture PCM, avoids resampling
+const SILENT = -200; // Rust sends -200 for -inf
+
+const tauri = () => window.__TAURI__;
+const invoke = (cmd, args) => tauri().core.invoke(cmd, args);
+
+function listen(event, callback) {
+  let unlisten = null;
+  let dead = false;
+  tauri().event.listen(event, e => callback(e.payload)).then(fn => { if (dead) fn(); else unlisten = fn; });
+  return () => { dead = true; unlisten?.(); };
+}
+
+const toDb = v => (typeof v === "number" && v > SILENT + 1 ? v : -Infinity);
 
 export class MixerEngine {
-  constructor({ AudioContextCtor = globalThis.AudioContext, latencyHint = "interactive", inputCount = 3 } = {}) {
-    this.AudioContextCtor = AudioContextCtor;
+  constructor({ latencyHint = "balanced", inputCount = 3 } = {}) {
     this.latencyHint = latencyHint;
     this.inputCount = inputCount;
-    this.ctx = null;
-    this.buses = {};
-    this.strips = [];
-    this.outputs = {};
+    this.ctx = null; // truthy while running (kept for app.js checks)
     this.soloActive = false;
-    this.onLimiterReduction = null;
+    this.primaryBus = null;
+    this.state = {
+      strips: Array.from({ length: inputCount }, () => ({ source: "", enabled: false, gainDb: 0, mute: false, solo: false, forceMono: false, sends: {} })),
+      buses: Object.fromEntries(BUS_IDS.map(id => [id, { volumeDb: 0, mute: false, active: false }])),
+      master: {}
+    };
+    this.levels = {
+      inputs: Array.from({ length: inputCount }, () => [-Infinity, -Infinity]),
+      buses: Object.fromEntries(BUS_IDS.map(id => [id, [-Infinity, -Infinity, 0]]))
+    };
+    this.levelsAt = 0;
+    this.flushQueued = false;
+    this.unsubscribers = [];
   }
 
   async init() {
     if (this.ctx) return;
-    const ctx = new this.AudioContextCtor({ latencyHint: this.latencyHint, sampleRate: SAMPLE_RATE });
-    this.ctx = ctx;
-    await loadWorklets(ctx);
-    BUS_IDS.forEach(id => { this.buses[id] = this.createBus(id); });
-    for (let i = 0; i < this.inputCount; i++) this.strips.push(this.createStrip(i));
-    await this.resume();
+    this.ctx = { running: true };
+    this.unsubscribers.push(listen("meters", payload => {
+      (payload?.inputs || []).forEach((pair, i) => { if (this.levels.inputs[i]) this.levels.inputs[i] = [toDb(pair[0]), toDb(pair[1])]; });
+      Object.entries(payload?.buses || {}).forEach(([id, v]) => { this.levels.buses[id] = [toDb(v[0]), toDb(v[1]), Math.min(0, v[2] || 0)]; });
+      this.levelsAt = performance.now();
+    }));
+    await invoke("engine_set_latency", { hint: this.latencyHint });
+    this.flush();
   }
 
   async resume() {
-    const contexts = [this.ctx, ...Object.values(this.outputs).map(o => o.ctx)].filter(Boolean);
-    await Promise.all(contexts.map(c => (c.state === "suspended" ? c.resume().catch(() => {}) : null)));
+    this.setMeters(true);
   }
 
-  ramp(param, value, tc = RAMP_TC) {
-    if (!param) return;
-    const now = this.ctx ? this.ctx.currentTime : 0;
-    if (typeof param.cancelAndHoldAtTime === "function") param.cancelAndHoldAtTime(now);
-    else param.cancelScheduledValues(now);
-    param.setTargetAtTime(value, now, tc);
+  setMeters(enabled) {
+    invoke("engine_set_meters", { enabled: !!enabled }).catch(() => {});
   }
 
-  createAnalyser() {
-    const analyser = this.ctx.createAnalyser();
-    analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = 0;
-    return { analyser, buffer: new Float32Array(analyser.fftSize) };
+  // Batch every change made in the same tick into one engine_update call.
+  scheduleFlush() {
+    if (this.flushQueued) return;
+    this.flushQueued = true;
+    queueMicrotask(() => { this.flushQueued = false; this.flush(); });
   }
 
-  // ---------------------------------------------------------------- buses
-  createBus(id) {
-    const ctx = this.ctx;
-    const input = ctx.createGain();
-    const eqLow = ctx.createBiquadFilter();
-    const eqMid = ctx.createBiquadFilter();
-    const eqHigh = ctx.createBiquadFilter();
-    eqLow.type = "lowshelf"; eqLow.frequency.value = 180;
-    eqMid.type = "peaking"; eqMid.frequency.value = 1400; eqMid.Q.value = 0.9;
-    eqHigh.type = "highshelf"; eqHigh.frequency.value = 5600;
-    const drive = ctx.createGain();
-    const fader = ctx.createGain();
-    const clipPre = ctx.createGain();
-    const shaper = ctx.createWaveShaper();
-    const limiter = new AudioWorkletNode(ctx, "lookahead-limiter", {
-      numberOfInputs: 1,
-      numberOfOutputs: 1,
-      outputChannelCount: [2],
-      processorOptions: { lookahead: 0.003 }
-    });
-    const meter = this.createAnalyser();
-    const destination = ctx.createMediaStreamDestination();
-
-    input.connect(eqLow).connect(eqMid).connect(eqHigh).connect(drive).connect(fader)
-      .connect(clipPre).connect(shaper).connect(limiter);
-    const direct = ctx.createGain();
-    direct.gain.value = 0;
-    limiter.connect(meter.analyser);
-    limiter.connect(destination);
-    limiter.connect(direct).connect(ctx.destination);
-
-    const bus = { id, input, eqLow, eqMid, eqHigh, drive, fader, clipPre, shaper, limiter, meter, destination, direct, gainReductionDb: 0 };
-    limiter.port.onmessage = event => {
-      bus.gainReductionDb = event.data;
-      if (this.onLimiterReduction) this.onLimiterReduction(id, event.data);
-    };
-    return bus;
+  flush() {
+    if (!this.ctx) return;
+    invoke("engine_update", { engineState: this.state }).catch(error => console.error("[engine] update failed", error));
   }
 
   setBusParams(id, { volumeDb, mute, active }) {
-    const bus = this.buses[id];
+    const bus = this.state.buses[id];
     if (!bus) return;
-    this.ramp(bus.fader.gain, !active || mute ? 0 : dbToGain(volumeDb));
+    Object.assign(bus, { volumeDb, mute: !!mute, active: !!active });
+    this.scheduleFlush();
   }
 
   setMasterProcessing({ eq, driveDb, softClip, limiter }) {
-    Object.values(this.buses).forEach(bus => {
-      if (eq) {
-        this.ramp(bus.eqLow.gain, eq.low);
-        this.ramp(bus.eqMid.gain, eq.mid);
-        this.ramp(bus.eqHigh.gain, eq.high);
-      }
-      if (Number.isFinite(driveDb)) this.ramp(bus.drive.gain, dbToGain(driveDb));
-      if (softClip) {
-        // WaveShaper indexes its curve with input in [-1, 1]; scale down so the curve
-        // spans +/-SOFT_CLIP_RANGE. Curve values are already in output units.
-        const enabled = !!softClip.enabled;
-        bus.clipPre.gain.value = enabled ? 1 / SOFT_CLIP_RANGE : 1;
-        bus.shaper.curve = enabled ? buildSoftClipCurve(softClip.thresholdDb) : null;
-        bus.shaper.oversample = enabled ? "4x" : "none";
-      }
-      if (limiter) {
-        const t = this.ctx.currentTime;
-        bus.limiter.parameters.get("enabled").setValueAtTime(limiter.enabled ? 1 : 0, t);
-        bus.limiter.parameters.get("ceiling").setValueAtTime(dbToGain(limiter.ceilingDb), t);
-      }
-    });
+    const m = this.state.master;
+    if (eq) m.eq = { ...eq };
+    if (Number.isFinite(driveDb)) m.driveDb = driveDb;
+    if (softClip) m.softClip = { enabled: !!softClip.enabled, thresholdDb: softClip.thresholdDb };
+    if (limiter) m.limiter = { enabled: !!limiter.enabled, ceilingDb: limiter.ceilingDb };
+    this.scheduleFlush();
   }
 
-  // --------------------------------------------------------------- strips
-  createStrip(index) {
-    const ctx = this.ctx;
-    const input = ctx.createGain();
-    // Stereo and mono paths run in parallel; toggling mono crossfades between them.
-    const stereoPath = ctx.createGain();
-    const monoPath = ctx.createGain();
-    monoPath.channelCount = 1;
-    monoPath.channelCountMode = "explicit";
-    monoPath.channelInterpretation = "speakers";
-    const monoUp = ctx.createGain(); // mono -> stereo upmix (speakers interpretation)
-    monoUp.channelCount = 2;
-    monoUp.channelCountMode = "explicit";
-    const trim = ctx.createGain();
-    const muteGain = ctx.createGain();
-    const meter = this.createAnalyser();
-    const sends = {};
-
-    input.connect(stereoPath).connect(trim);
-    input.connect(monoPath).connect(monoUp).connect(trim);
-    monoPath.gain.value = 0;
-    trim.connect(muteGain);
-    muteGain.connect(meter.analyser);
-    BUS_IDS.forEach(id => {
-      const send = ctx.createGain();
-      send.gain.value = 0;
-      muteGain.connect(send).connect(this.buses[id].input);
-      sends[id] = send;
-    });
-
-    return { index, input, stereoPath, monoPath, monoUp, trim, muteGain, meter, sends, source: null, stream: null };
-  }
-
-  setStripStream(index, stream) {
-    const strip = this.strips[index];
+  // Bind a strip to an open source ("" / null = nothing).
+  setStripSource(index, sourceId) {
+    const strip = this.state.strips[index];
     if (!strip) return;
-    if (strip.source) {
-      // Only cut the link into this strip: an app node may also feed another strip.
-      try { strip.source.disconnect(strip.input); } catch (_) {}
-      strip.source = null;
-    }
-    strip.stream = stream || null;
-    if (stream) {
-      strip.source = this.ctx.createMediaStreamSource(stream);
-      strip.source.connect(strip.input);
-    }
+    strip.source = sourceId || "";
+    this.scheduleFlush();
   }
 
-  setStripNode(index, node) {
-    // Direct node input (used for application capture: no MediaStream round-trip).
-    const strip = this.strips[index];
-    if (!strip) return;
-    this.setStripStream(index, null);
-    if (node) {
-      node.connect(strip.input);
-      strip.source = node;
-    }
+  hasSource(index) {
+    return !!this.state.strips[index]?.source;
   }
 
-  // cfg = normalized input config, busActive = { monitor: bool, ... }
+  // cfg = normalized input config. Solo is resolved in Rust from all strips.
   setStripParams(index, cfg, busActive) {
-    const strip = this.strips[index];
+    const strip = this.state.strips[index];
     if (!strip || !cfg) return;
-    const audible = cfg.enabled && !cfg.mute && (!this.soloActive || cfg.solo);
-    this.ramp(strip.trim.gain, dbToGain(cfg.gainDb));
-    this.ramp(strip.muteGain.gain, audible ? 1 : 0);
-    this.ramp(strip.stereoPath.gain, cfg.forceMono ? 0 : 1);
-    this.ramp(strip.monoPath.gain, cfg.forceMono ? 1 : 0);
-    BUS_IDS.forEach(id => {
-      const send = cfg.sends[id];
-      const on = busActive[id] && send && send.on;
-      this.ramp(strip.sends[id].gain, on ? dbToGain(send.levelDb) : 0);
+    Object.assign(strip, {
+      enabled: !!cfg.enabled,
+      gainDb: cfg.gainDb,
+      mute: !!cfg.mute,
+      solo: !!cfg.solo,
+      forceMono: !!cfg.forceMono,
+      sends: Object.fromEntries(BUS_IDS.map(id => [id, { on: !!(cfg.sends[id]?.on && busActive[id]), levelDb: cfg.sends[id]?.levelDb ?? 0 }]))
     });
+    this.scheduleFlush();
   }
 
-  // ---------------------------------------------------------- output sinks
-  // deviceIds = { monitor: "id" | "", ... }. Returns { busId: Error } for failures.
+  // deviceIds = { monitor: "endpoint id" | "", ... }. Returns { busId: Error } for failures.
   async setOutputs(deviceIds) {
-    const errors = {};
-    const primary = BUS_IDS.find(id => deviceIds[id]) || null;
-    if (primary && this.ctxSinkId !== deviceIds[primary]) {
-      try {
-        await this.ctx.setSinkId(deviceIds[primary]);
-        this.ctxSinkId = deviceIds[primary];
-      } catch (error) {
-        errors[primary] = error;
-      }
-    }
-    for (const id of BUS_IDS) {
-      const bus = this.buses[id];
-      const isPrimary = id === primary && !errors[id];
-      bus.direct.gain.value = isPrimary ? 1 : 0;
-      try {
-        await this.setBridge(id, !isPrimary && deviceIds[id] ? deviceIds[id] : "");
-      } catch (error) {
-        errors[id] = error;
-      }
-    }
-    this.primaryBus = primary;
-    return errors;
-  }
-
-  async setBridge(id, deviceId) {
-    let output = this.outputs[id];
-    if (!deviceId) {
-      if (output) {
-        // close idle bridges: an unused AudioContext still burns a device clock
-        delete this.outputs[id];
-        await output.ctx.close().catch(() => {});
-      }
-      return;
-    }
-    if (!output) {
-      const ctx = new this.AudioContextCtor({ latencyHint: this.latencyHint, sampleRate: SAMPLE_RATE });
-      const source = ctx.createMediaStreamSource(this.buses[id].destination.stream);
-      source.connect(ctx.destination);
-      output = { ctx, source, deviceId: null };
-      this.outputs[id] = output;
-    }
-    if (output.ctx.state === "suspended") await output.ctx.resume().catch(() => {});
-    if (output.deviceId !== deviceId) {
-      await output.ctx.setSinkId(deviceId);
-      output.deviceId = deviceId;
-    }
+    const result = await invoke("engine_set_outputs", { devices: Object.fromEntries(BUS_IDS.map(id => [id, deviceIds[id] || ""])) });
+    this.primaryBus = result?.primary || null;
+    return Object.fromEntries(Object.entries(result?.errors || {}).map(([id, message]) => [id, new Error(message)]));
   }
 
   async close() {
-    const contexts = [this.ctx, ...Object.values(this.outputs).map(o => o.ctx)].filter(Boolean);
+    if (!this.ctx) return;
     this.ctx = null;
-    this.outputs = {};
-    this.buses = {};
-    this.strips = [];
-    await Promise.all(contexts.map(c => c.close().catch(() => {})));
+    this.unsubscribers.forEach(fn => fn());
+    this.unsubscribers = [];
+    await invoke("engine_set_outputs", { devices: Object.fromEntries(BUS_IDS.map(id => [id, ""])) }).catch(() => {});
   }
 }
+
+export { listen, invoke };
